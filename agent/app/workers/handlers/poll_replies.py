@@ -1,16 +1,18 @@
-from app.db.sqlite import get_session, Lead
+# app/workers/handlers/poll_replies.py
+
+from datetime import datetime, timedelta
 from app.db.sqlite import log_event
+from app.queue.job_queue import enqueue
 
 def handle_poll_replies(payload: dict):
-    lead_id = int(payload["lead_id"])
+    campaign_id = payload.get("campaign_id")
+    # TODO: implement:
+    # - list recent messages
+    # - correlate to lead by thread_id / conversation_id
+    # - sentiment/intent classify
+    # - stop lead on negative, schedule meeting on positive
 
-    session = get_session()
-    lead = session.query(Lead).filter(Lead.id == lead_id).first()
-    if not lead:
-        session.close()
-        return
+    log_event("replies.poll", campaign_id=campaign_id, message="poll stub (not implemented yet)")
 
-    # TODO: call M365 replies API and classify
-    # For now: do nothing
-    session.close()
-    log_event("replies.polled", lead_id=lead_id, message="Polled replies (stub)")
+    # keep polling
+    enqueue("poll_replies", {"campaign_id": campaign_id}, run_at=datetime.utcnow() + timedelta(seconds=60))
