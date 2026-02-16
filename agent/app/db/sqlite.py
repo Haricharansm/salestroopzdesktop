@@ -1,3 +1,12 @@
+# app/db/sqlite.py
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+from datetime import datetime, timedelta
+
 from sqlalchemy import (
     create_engine,
     Column,
@@ -8,15 +17,35 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-from datetime import datetime, timedelta
-import json
 
-DATABASE_URL = "sqlite:///salestroopz.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine)
+# =============================================================================
+# DB Location (IMPORTANT)
+# -----------------------------------------------------------------------------
+# Force the DB file to live in the agent/ folder (stable path),
+# instead of "whatever directory you launched python from".
+# =============================================================================
 
+# sqlite.py is at: agent/app/db/sqlite.py
+AGENT_DIR = Path(__file__).resolve().parents[2]  # -> agent/
+DEFAULT_DB_FILE = AGENT_DIR / "salestroopz.db"
+
+# Allow override from env
+DB_FILE = Path(os.getenv("SQLITE_DB_FILE", str(DEFAULT_DB_FILE)))
+if not DB_FILE.is_absolute():
+    DB_FILE = (AGENT_DIR / DB_FILE).resolve()
+
+DATABASE_URL = f"sqlite:///{DB_FILE.as_posix()}"
+
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    future=True,
+)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
+
 
 # ----------------------------
 # Workspace
@@ -78,11 +107,9 @@ class Lead(Base):
     # NEW | WAITING_REPLY | FOLLOWUP | STOPPED_POSITIVE | STOPPED_NEGATIVE | COMPLETED
 
     touch_count = Column(Integer, default=0)
-
     next_touch_at = Column(DateTime, default=datetime.utcnow)
 
     conversation_id = Column(String, nullable=True)
-
     created_at = Column(DateTime, default=datetime.utcnow)
 
     campaign = relationship("Campaign", back_populates="leads")
@@ -96,22 +123,20 @@ class ActivityLog(Base):
     __tablename__ = "activity_log"
 
     id = Column(Integer, primary_key=True, index=True)
-
     lead_id = Column(Integer, ForeignKey("lead.id"))
 
     type = Column(String)
     # email_sent | reply_received | followup_scheduled | positive_detected | negative_detected
 
     message = Column(Text)
-
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     lead = relationship("Lead", back_populates="activities")
 
 
-# ============================================================
-# Production Runtime Tables
-# ============================================================
+# =============================================================================
+# Runtime Tables
+# =============================================================================
 
 # ----------------------------
 # Durable Job Queue (SQLite-backed)
@@ -120,8 +145,13 @@ class JobQueue(Base):
     __tablename__ = "job_queue"
 
     id = Column(Integer, primary_key=True, index=True)
-    job_type = Column(String, index=True)                 # tick | generate_copy | send_email | poll_replies | decide_next
-    status = Column(String, default="queued", index=True) # queued | running | done | failed
+
+    # Optional denormalized pointers (helps debugging + filtering)
+    campaign_id = Column(Integer, nullable=True, index=True)
+    lead_id = Column(Integer, nullable=True, index=True)
+
+    job_type = Column(String, index=True)                  # tick | generate_copy | send_email | poll_replies | decide_next
+    status = Column(String, default="queued", index=True)  # queued | running | done | failed
 
     run_at = Column(DateTime, default=datetime.utcnow, index=True)
 
@@ -137,10 +167,6 @@ class JobQueue(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
-    # ✅ these exist in your DB schema (per screenshot); keep nullable
-    campaign_id = Column(Integer, nullable=True, index=True)
-    lead_id = Column(Integer, nullable=True, index=True)
-
 
 # ----------------------------
 # Outbox (Idempotent sending)
@@ -153,13 +179,13 @@ class OutboxEmail(Base):
     lead_id = Column(Integer, ForeignKey("lead.id"), index=True)
 
     step_index = Column(Integer, default=0)
-    dedupe_key = Column(String, unique=True, index=True)  # ensures idempotency
+    dedupe_key = Column(String, unique=True, index=True)
 
     subject = Column(String, nullable=False)
     body = Column(Text, nullable=False)
 
-    status = Column(String, default="queued", index=True) # queued | sent | failed
-    provider = Column(String, default="m365")             # m365 | smtp
+    status = Column(String, default="queued", index=True)  # queued | sent | failed
+    provider = Column(String, default="m365")
 
     provider_message_id = Column(String, nullable=True, index=True)
     thread_id = Column(String, nullable=True, index=True)
@@ -177,8 +203,8 @@ class Event(Base):
     __tablename__ = "event"
 
     id = Column(Integer, primary_key=True, index=True)
-    level = Column(String, default="INFO", index=True)     # INFO | WARN | ERROR
-    event_type = Column(String, index=True)                # job.claimed, email.sent, etc.
+    level = Column(String, default="INFO", index=True)  # INFO | WARN | ERROR
+    event_type = Column(String, index=True)
 
     campaign_id = Column(Integer, nullable=True, index=True)
     lead_id = Column(Integer, nullable=True, index=True)
@@ -191,7 +217,7 @@ class Event(Base):
 
 
 # ----------------------------
-# Versioned strategy snapshots (recommended)
+# Versioned strategy snapshots
 # ----------------------------
 class CampaignStrategyVersion(Base):
     __tablename__ = "campaign_strategy_version"
@@ -207,9 +233,9 @@ class CampaignStrategyVersion(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ============================================================
+# =============================================================================
 # DB Helpers / Migrations
-# ============================================================
+# =============================================================================
 
 def _set_sqlite_pragmas():
     """
@@ -232,7 +258,6 @@ def _set_sqlite_pragmas():
 def _ensure_campaign_columns():
     conn = engine.raw_connection()
     cur = conn.cursor()
-
     try:
         cur.execute("ALTER TABLE campaign ADD COLUMN strategy_json TEXT")
     except Exception:
@@ -245,19 +270,17 @@ def _ensure_campaign_columns():
         cur.execute("ALTER TABLE campaign ADD COLUMN run_config_json TEXT")
     except Exception:
         pass
-
     conn.commit()
     conn.close()
 
 
 def _ensure_job_queue_columns():
     """
-    If your DB already exists, make sure job_queue has the columns the code expects.
-    Safe to run repeatedly.
+    Your DB already shows these columns exist in job_queue in screenshots.
+    But for anyone on an older DB, add them safely.
     """
     conn = engine.raw_connection()
     cur = conn.cursor()
-
     try:
         cur.execute("ALTER TABLE job_queue ADD COLUMN campaign_id INTEGER")
     except Exception:
@@ -266,7 +289,6 @@ def _ensure_job_queue_columns():
         cur.execute("ALTER TABLE job_queue ADD COLUMN lead_id INTEGER")
     except Exception:
         pass
-
     conn.commit()
     conn.close()
 
@@ -282,9 +304,9 @@ def get_session():
     return SessionLocal()
 
 
-# ============================================================
+# =============================================================================
 # Operational Event Logger
-# ============================================================
+# =============================================================================
 
 def log_event(
     event_type: str,
@@ -311,19 +333,17 @@ def log_event(
     return True
 
 
-# ============================================================
-# Workspace Save / Helpers
-# ============================================================
+# =============================================================================
+# Workspace helpers
+# =============================================================================
 
 def save_workspace(data):
     session = get_session()
-
     workspace = Workspace(
         company_name=data.company_name,
         offering=data.offering,
-        icp=data.icp
+        icp=data.icp,
     )
-
     session.add(workspace)
     session.commit()
     session.close()
@@ -336,9 +356,9 @@ def get_latest_workspace():
     return ws
 
 
-# ============================================================
+# =============================================================================
 # Campaign helpers
-# ============================================================
+# =============================================================================
 
 def create_campaign(workspace_id: int, name: str, cadence_days: int = 3, max_touches: int = 4):
     session = get_session()
@@ -378,7 +398,6 @@ def create_campaign_from_strategy(
         sequence_json=json.dumps(sequence),
         run_config_json=json.dumps(run_config),
     )
-
     session.add(campaign)
     session.commit()
     session.refresh(campaign)
@@ -392,8 +411,8 @@ def create_campaign_from_strategy(
     )
     session.add(v)
     session.commit()
-
     session.close()
+
     log_event("campaign.created", campaign_id=campaign.id, message=f"Campaign created: {campaign.name}")
     return campaign
 
@@ -473,9 +492,9 @@ def save_campaign_run_config(campaign_id: int, run_config: dict):
     return campaign
 
 
-# ============================================================
+# =============================================================================
 # Lead helpers
-# ============================================================
+# =============================================================================
 
 def add_leads_bulk(campaign_id: int, leads: list[dict]):
     session = get_session()
@@ -592,9 +611,9 @@ def stop_lead(lead_id: int, positive: bool, note: str = ""):
     return lead
 
 
-# ============================================================
-# Activity helpers (Human-friendly)
-# ============================================================
+# =============================================================================
+# Activity helpers
+# =============================================================================
 
 def log_activity(lead_id: int, type: str, message: str):
     session = get_session()
