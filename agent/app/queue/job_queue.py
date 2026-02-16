@@ -95,25 +95,28 @@ def enqueue(
 def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | None:
     """
     Claim the next due job by taking a lease.
-
-    IMPORTANT: We do this in a "select candidate -> conditional update -> re-read" pattern
-    to reduce race conditions when multiple workers exist.
-
     Crash-safe:
     - jobs stuck in running can be reclaimed after lease expires
     """
+
     now = datetime.utcnow()
     owner = _owner_id()
     lease_expires = now + timedelta(seconds=lease_seconds)
 
     session = get_session()
+
     try:
-        # 1) find a candidate id (do NOT hold the object; keep it short)
+        # 1️⃣ Find candidate job id
         candidate = (
             session.query(JobQueue.id)
             .filter(JobQueue.run_at <= now)
             .filter(JobQueue.status.in_(["queued", "running"]))
-            .filter(or_(JobQueue.lease_expires_at == None, JobQueue.lease_expires_at <= now))
+            .filter(
+                or_(
+                    JobQueue.lease_expires_at == None,
+                    JobQueue.lease_expires_at <= now,
+                )
+            )
             .order_by(JobQueue.run_at.asc(), JobQueue.id.asc())
             .first()
         )
@@ -123,13 +126,18 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
 
         job_id = candidate[0]
 
-        # 2) conditional update: only claim if still claimable
+        # 2️⃣ Try to claim it atomically
         updated = (
             session.query(JobQueue)
             .filter(JobQueue.id == job_id)
             .filter(JobQueue.run_at <= now)
             .filter(JobQueue.status.in_(["queued", "running"]))
-            .filter(or_(JobQueue.lease_expires_at == None, JobQueue.lease_expires_at <= now))
+            .filter(
+                or_(
+                    JobQueue.lease_expires_at == None,
+                    JobQueue.lease_expires_at <= now,
+                )
+            )
             .update(
                 {
                     JobQueue.status: "running",
@@ -139,35 +147,35 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
                 },
                 synchronize_session=False,
             )
+        )
+
         session.commit()
 
         if updated == 0:
-            # Someone else claimed it between select and update.
             return None
 
-        # 3) re-read full row
+        # 3️⃣ Load full row
         job = session.query(JobQueue).filter(JobQueue.id == job_id).first()
-        if not job:
-            return None
 
-        log_event(
-            "job.claimed",
-            job_id=job.id,
-            campaign_id=job.campaign_id,
-            lead_id=job.lead_id,
-            message=f"Claimed {job.job_type}",
-            data={"owner": owner, "lease_expires_at": lease_expires.isoformat()},
-        )
+        if job:
+            log_event(
+                "job.claimed",
+                job_id=job.id,
+                campaign_id=job.campaign_id,
+                lead_id=job.lead_id,
+                message=f"Claimed {job.job_type}",
+            )
+
         return job
 
     except OperationalError as e:
-        # SQLite "database is locked" etc. Let runner retry naturally.
         session.rollback()
         log_event("job.claim_error", level="WARN", message=str(e))
         return None
 
     finally:
         session.close()
+
 
 
 def extend_lease(job_id: int, lease_seconds: int = LEASE_SECONDS_DEFAULT) -> bool:
