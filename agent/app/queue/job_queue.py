@@ -43,30 +43,27 @@ def _extract_campaign_lead(payload: dict) -> tuple[int | None, int | None]:
 
 
 def enqueue(job_type: str, payload: dict, run_at: datetime | None = None, max_attempts: int = 8) -> int:
-    """
-    Enqueue a new job. Also stores campaign_id/lead_id (if present) for observability.
-    """
     session = get_session()
-    try:
-        campaign_id, lead_id = _extract_campaign_lead(payload)
+    row = JobQueue(
+        job_type=job_type,
+        status="queued",
+        run_at=run_at or datetime.utcnow(),
+        attempts=0,
+        max_attempts=max_attempts,
 
-        row = JobQueue(
-            job_type=job_type,
-            status="queued",
-            run_at=run_at or datetime.utcnow(),
-            attempts=0,
-            max_attempts=max_attempts,
-            lease_owner=None,
-            lease_expires_at=None,
-            payload_json=json.dumps(payload),
-            last_error=None,
-            campaign_id=campaign_id,
-            lead_id=lead_id,
-            updated_at=datetime.utcnow(),
-        )
-        session.add(row)
-        session.commit()
-        session.refresh(row)
+        # ✅ important for dedupe / visibility:
+        campaign_id=payload.get("campaign_id"),
+        lead_id=payload.get("lead_id"),
+
+        payload_json=json.dumps(payload),
+        updated_at=datetime.utcnow(),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    session.close()
+    return row.id
+
 
         log_event(
             "job.enqueued",
