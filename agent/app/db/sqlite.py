@@ -1,3 +1,5 @@
+# app/db/sqlite.py
+
 from sqlalchemy import (
     create_engine,
     Column,
@@ -13,10 +15,19 @@ import json
 
 DATABASE_URL = "sqlite:///salestroopz.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(bind=engine)
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 Base = declarative_base()
+
+# ============================================================
+# Core Tables
+# ============================================================
 
 # ----------------------------
 # Workspace
@@ -78,7 +89,6 @@ class Lead(Base):
     # NEW | WAITING_REPLY | FOLLOWUP | STOPPED_POSITIVE | STOPPED_NEGATIVE | COMPLETED
 
     touch_count = Column(Integer, default=0)
-
     next_touch_at = Column(DateTime, default=datetime.utcnow)
 
     conversation_id = Column(String, nullable=True)
@@ -103,14 +113,13 @@ class ActivityLog(Base):
     # email_sent | reply_received | followup_scheduled | positive_detected | negative_detected
 
     message = Column(Text)
-
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     lead = relationship("Lead", back_populates="activities")
 
 
 # ============================================================
-# NEW: Production Runtime Tables
+# Runtime Tables (Queue / Outbox / Events)
 # ============================================================
 
 # ----------------------------
@@ -120,8 +129,13 @@ class JobQueue(Base):
     __tablename__ = "job_queue"
 
     id = Column(Integer, primary_key=True, index=True)
-    job_type = Column(String, index=True)                 # tick | generate_copy | send_email | poll_replies | decide_next
-    status = Column(String, default="queued", index=True) # queued | running | done | failed
+
+    # Helpful for filtering / debugging
+    campaign_id = Column(Integer, nullable=True, index=True)
+    lead_id = Column(Integer, nullable=True, index=True)
+
+    job_type = Column(String, index=True)                  # tick | generate_copy | send_email | poll_replies
+    status = Column(String, default="queued", index=True)  # queued | running | done | failed
 
     run_at = Column(DateTime, default=datetime.utcnow, index=True)
 
@@ -145,17 +159,23 @@ class OutboxEmail(Base):
     __tablename__ = "outbox_email"
 
     id = Column(Integer, primary_key=True, index=True)
+
     campaign_id = Column(Integer, ForeignKey("campaign.id"), index=True)
     lead_id = Column(Integer, ForeignKey("lead.id"), index=True)
 
+    # NEW: actual recipient (needed for sending)
+    to_email = Column(String, nullable=True, index=True)
+
     step_index = Column(Integer, default=0)
-    dedupe_key = Column(String, unique=True, index=True)  # ensures idempotency
+
+    # idempotency key (we generate: "{campaign_id}:{lead_id}:{step_index}")
+    dedupe_key = Column(String, unique=True, index=True)
 
     subject = Column(String, nullable=False)
     body = Column(Text, nullable=False)
 
-    status = Column(String, default="queued", index=True) # queued | sent | failed
-    provider = Column(String, default="m365")             # m365 | smtp
+    status = Column(String, default="queued", index=True)  # queued | sent | failed
+    provider = Column(String, default="m365")              # m365 | smtp | simulated
 
     provider_message_id = Column(String, nullable=True, index=True)
     thread_id = Column(String, nullable=True, index=True)
@@ -173,8 +193,9 @@ class Event(Base):
     __tablename__ = "event"
 
     id = Column(Integer, primary_key=True, index=True)
-    level = Column(String, default="INFO", index=True)     # INFO | WARN | ERROR
-    event_type = Column(String, index=True)                # job.claimed, email.sent, etc.
+
+    level = Column(String, default="INFO", index=True)  # INFO | WARN | ERROR
+    event_type = Column(String, index=True)
 
     campaign_id = Column(Integer, nullable=True, index=True)
     lead_id = Column(Integer, nullable=True, index=True)
@@ -209,7 +230,7 @@ class CampaignStrategyVersion(Base):
 
 def _set_sqlite_pragmas():
     """
-    Recommended for production-ish SQLite on a desktop app:
+    Desktop SQLite settings:
     - WAL mode for concurrency
     - busy_timeout to reduce "database is locked"
     """
@@ -226,26 +247,59 @@ def _set_sqlite_pragmas():
 
 
 def _ensure_campaign_columns():
-    """
-    Lightweight migration for existing SQLite DBs.
-    Adds missing columns if the table already exists.
-    """
     conn = engine.raw_connection()
     cur = conn.cursor()
-
-    # Add columns defensively (ignore if exists)
     try:
         cur.execute("ALTER TABLE campaign ADD COLUMN strategy_json TEXT")
     except Exception:
         pass
-
     try:
         cur.execute("ALTER TABLE campaign ADD COLUMN sequence_json TEXT")
     except Exception:
         pass
-
     try:
         cur.execute("ALTER TABLE campaign ADD COLUMN run_config_json TEXT")
+    except Exception:
+        pass
+    conn.commit()
+    conn.close()
+
+
+def _ensure_job_queue_columns():
+    """
+    If your DB was created before campaign_id/lead_id were added to JobQueue,
+    this adds them safely.
+    """
+    conn = engine.raw_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE job_queue ADD COLUMN campaign_id INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE job_queue ADD COLUMN lead_id INTEGER")
+    except Exception:
+        pass
+
+    conn.commit()
+    conn.close()
+
+
+def _ensure_outbox_columns():
+    """
+    Ensure outbox has to_email and dedupe_key, etc.
+    (SQLite cannot add UNIQUE constraints via ALTER TABLE; that's OK for MVP.)
+    """
+    conn = engine.raw_connection()
+    cur = conn.cursor()
+
+    try:
+        cur.execute("ALTER TABLE outbox_email ADD COLUMN to_email TEXT")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE outbox_email ADD COLUMN dedupe_key TEXT")
     except Exception:
         pass
 
@@ -256,7 +310,13 @@ def _ensure_campaign_columns():
 def init_db():
     _set_sqlite_pragmas()
     Base.metadata.create_all(bind=engine)
+
+    # lightweight migrations
     _ensure_campaign_columns()
+    _ensure_job_queue_columns()
+    _ensure_outbox_columns()
+
+    log_event("db.init", message="DB initialized; pragmas set; migrations checked")
 
 
 def get_session():
@@ -264,7 +324,7 @@ def get_session():
 
 
 # ============================================================
-# NEW: Operational Event Logger
+# Operational Event Logger
 # ============================================================
 
 def log_event(
@@ -298,13 +358,11 @@ def log_event(
 
 def save_workspace(data):
     session = get_session()
-
     workspace = Workspace(
         company_name=data.company_name,
         offering=data.offering,
-        icp=data.icp
+        icp=data.icp,
     )
-
     session.add(workspace)
     session.commit()
     session.close()
@@ -369,7 +427,6 @@ def create_campaign_from_strategy(
     session.commit()
     session.refresh(campaign)
 
-    # strategy version snapshot
     v = CampaignStrategyVersion(
         campaign_id=campaign.id,
         version=1,
@@ -416,6 +473,13 @@ def list_campaigns(workspace_id: int):
     )
     session.close()
     return campaigns
+
+
+def list_running_campaigns():
+    session = get_session()
+    rows = session.query(Campaign).filter(Campaign.status == "running").all()
+    session.close()
+    return rows
 
 
 def save_campaign_sequence(campaign_id: int, sequence: dict):
@@ -580,6 +644,140 @@ def stop_lead(lead_id: int, positive: bool, note: str = ""):
     session.close()
     log_event("lead.stopped", lead_id=lead_id, level="INFO", message=note, data={"positive": positive})
     return lead
+
+
+def complete_lead(lead_id: int, note: str = ""):
+    session = get_session()
+    lead = session.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        session.close()
+        return None
+    lead.state = "COMPLETED"
+    session.commit()
+    session.refresh(lead)
+    session.close()
+    log_event("lead.completed", lead_id=lead_id, message=note)
+    return lead
+
+
+# ============================================================
+# Outbox helpers (Idempotent)
+# ============================================================
+
+def _dedupe_key(campaign_id: int, lead_id: int, step_index: int) -> str:
+    return f"{campaign_id}:{lead_id}:{step_index}"
+
+
+def get_outbox_email(lead_id: int, step_index: int, campaign_id: int | None = None):
+    """
+    Prefer dedupe_key lookup when campaign_id is provided.
+    Fallback: lead_id + step_index.
+    """
+    session = get_session()
+
+    row = None
+    if campaign_id is not None:
+        dk = _dedupe_key(campaign_id, lead_id, step_index)
+        row = session.query(OutboxEmail).filter(OutboxEmail.dedupe_key == dk).first()
+
+    if row is None:
+        row = (
+            session.query(OutboxEmail)
+            .filter(OutboxEmail.lead_id == lead_id)
+            .filter(OutboxEmail.step_index == step_index)
+            .order_by(OutboxEmail.id.desc())
+            .first()
+        )
+
+    session.close()
+    return row
+
+
+def create_outbox_email(
+    lead_id: int,
+    campaign_id: int,
+    step_index: int,
+    to_email: str,
+    subject: str,
+    body: str,
+    provider: str = "m365",
+):
+    """
+    Idempotent create:
+    - If a row already exists for this (campaign, lead, step), return it.
+    """
+    existing = get_outbox_email(lead_id=lead_id, step_index=step_index, campaign_id=campaign_id)
+    if existing:
+        return existing
+
+    session = get_session()
+    row = OutboxEmail(
+        campaign_id=campaign_id,
+        lead_id=lead_id,
+        to_email=to_email,
+        step_index=step_index,
+        dedupe_key=_dedupe_key(campaign_id, lead_id, step_index),
+        subject=subject,
+        body=body,
+        status="queued",
+        provider=provider,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    session.close()
+
+    log_event(
+        "outbox.created",
+        campaign_id=campaign_id,
+        lead_id=lead_id,
+        message=f"outbox_id={row.id} step_index={step_index}",
+    )
+    return row
+
+
+def mark_outbox_sent(outbox_id: int, provider_message_id: str | None = None):
+    session = get_session()
+    row = session.query(OutboxEmail).filter(OutboxEmail.id == outbox_id).first()
+    if not row:
+        session.close()
+        return None
+
+    row.status = "sent"
+    row.provider_message_id = provider_message_id
+    row.sent_at = datetime.utcnow()
+
+    session.commit()
+    session.refresh(row)
+    session.close()
+
+    log_event("outbox.sent", campaign_id=row.campaign_id, lead_id=row.lead_id, message=f"outbox_id={outbox_id}")
+    return row
+
+
+def mark_outbox_failed(outbox_id: int, err: str):
+    session = get_session()
+    row = session.query(OutboxEmail).filter(OutboxEmail.id == outbox_id).first()
+    if not row:
+        session.close()
+        return None
+
+    row.status = "failed"
+    row.last_error = err
+
+    session.commit()
+    session.refresh(row)
+    session.close()
+
+    log_event(
+        "outbox.failed",
+        level="ERROR",
+        campaign_id=row.campaign_id,
+        lead_id=row.lead_id,
+        message=f"outbox_id={outbox_id}",
+        data={"error": err},
+    )
+    return row
 
 
 # ============================================================
