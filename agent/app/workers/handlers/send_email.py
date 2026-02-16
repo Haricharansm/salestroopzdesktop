@@ -1,192 +1,89 @@
-# app/m365/client.py
-import requests
-from typing import Any, Dict, Optional
+# app/workers/handlers/send_email.py
 
-GRAPH = "https://graph.microsoft.com/v1.0"
+from datetime import datetime, timedelta
+
+from app.db.sqlite import (
+    get_session,
+    Campaign,
+    Lead,
+    OutboxEmail,
+    log_event,
+    log_activity,
+)
+from app.m365.auth import M365Auth
+from app.m365.client import M365Client
 
 
-class M365Client:
-    def __init__(self, access_token: str):
-        self.h = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        }
+def handle_send_email(payload: dict):
+    outbox_id = int(payload["outbox_id"])
+    campaign_id = int(payload.get("campaign_id") or 0) or None
+    lead_id = int(payload.get("lead_id") or 0) or None
 
-    def me(self) -> Dict[str, Any]:
-        r = requests.get(f"{GRAPH}/me", headers=self.h, timeout=30)
-        r.raise_for_status()
-        return r.json()
+    session = get_session()
+    try:
+        row = session.query(OutboxEmail).filter(OutboxEmail.id == outbox_id).first()
+        if not row:
+            log_event("email.skip", level="WARN", campaign_id=campaign_id, lead_id=lead_id, message="missing outbox row")
+            return
 
-    # ------------------------------------------------------------------
-    # Legacy: simple sendMail (no message id returned by Graph)
-    # ------------------------------------------------------------------
-    def send_mail(self, to_email: str, subject: str, body_text: str) -> bool:
-        payload = {
-            "message": {
-                "subject": subject,
-                "body": {"contentType": "Text", "content": body_text},
-                "toRecipients": [{"emailAddress": {"address": to_email}}],
-            },
-            "saveToSentItems": True,
-        }
-        r = requests.post(f"{GRAPH}/me/sendMail", headers=self.h, json=payload, timeout=30)
-        r.raise_for_status()
-        return True
+        if row.status == "sent":
+            log_event("email.idempotent", campaign_id=row.campaign_id, lead_id=row.lead_id, message="already sent", data={"outbox_id": row.id})
+            return
 
-    # ------------------------------------------------------------------
-    # Production: draft -> send by id (gives you ids for reply tracking)
-    # ------------------------------------------------------------------
-    def create_draft(
-        self,
-        to_email: str,
-        subject: str,
-        body_text: str,
-        *,
-        reply_to_message_id: Optional[str] = None,
-        in_reply_to_internet_message_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """
-        Creates a draft message and returns the message object including:
-          - id
-          - conversationId
-          - internetMessageId (often present in sent items)
-        """
-        message: Dict[str, Any] = {
-            "subject": subject,
-            "body": {"contentType": "Text", "content": body_text},
-            "toRecipients": [{"emailAddress": {"address": to_email}}],
-        }
+        c = session.query(Campaign).filter(Campaign.id == row.campaign_id).first()
+        lead = session.query(Lead).filter(Lead.id == row.lead_id).first()
+        if not c or not lead:
+            log_event("email.skip", level="WARN", campaign_id=row.campaign_id, lead_id=row.lead_id, message="missing campaign/lead")
+            return
 
-        # NOTE:
-        # - Graph supports creating replies via /messages/{id}/createReply, which is better than guessing headers.
-        # - Keeping these optional fields here for future, but the safer path is createReply().
-        if in_reply_to_internet_message_id:
-            message["internetMessageHeaders"] = [
-                {"name": "In-Reply-To", "value": in_reply_to_internet_message_id}
-            ]
+        if c.status != "running":
+            log_event("email.skip", campaign_id=c.id, lead_id=lead.id, message=f"campaign not running ({c.status})")
+            return
 
-        payload = message
+        # Acquire token (must already be connected via device flow in UI)
+        auth = M365Auth()
+        token = auth.acquire_token_silent()
+        if not token or "access_token" not in token:
+            raise RuntimeError("Not connected to Microsoft 365 (no token). Go to Settings (M365) and connect.")
 
-        r = requests.post(f"{GRAPH}/me/messages", headers=self.h, json=payload, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        client = M365Client(token["access_token"])
 
-    def send_draft(self, message_id: str) -> bool:
-        """
-        Sends an existing draft by id.
-        """
-        r = requests.post(f"{GRAPH}/me/messages/{message_id}/send", headers=self.h, timeout=30)
-        r.raise_for_status()
-        return True
+        # Basic personalization tokens (keep it simple)
+        first_name = (lead.full_name or "").split(" ")[0].strip() or "there"
+        subject = row.subject.replace("{{first_name}}", first_name)
+        body = row.body.replace("{{first_name}}", first_name)
 
-    def create_and_send(
-        self,
-        to_email: str,
-        subject: str,
-        body_text: str,
-    ) -> Dict[str, Any]:
-        """
-        Convenience: create draft, send it, then fetch from Sent Items to recover ids.
-        Returns:
-          {
-            "draft_id": "...",
-            "conversation_id": "...",
-            "internet_message_id": "...",
-            "sent_message_id": "..."   # best-effort
-          }
-        """
-        draft = self.create_draft(to_email, subject, body_text)
-        draft_id = draft.get("id")
-        conversation_id = draft.get("conversationId")
+        # NOTE: your M365Client.send_mail currently doesn't return message id.
+        # If you later return message-id/thread-id, store it in provider_message_id/thread_id.
+        client.send_mail(lead.email, subject, body)
 
-        self.send_draft(draft_id)
+        row.status = "sent"
+        row.sent_at = datetime.utcnow()
+        row.last_error = None
 
-        # Best-effort: fetch from Sent Items by draft_id is not directly supported.
-        # Instead, query Sent Items for very recent messages matching subject + recipient.
-        sent = self._find_recent_sent(to_email=to_email, subject=subject)
+        # advance lead
+        lead.touch_count = int(lead.touch_count or 0) + 1
+        lead.state = "WAITING_REPLY"
+        lead.next_touch_at = datetime.utcnow() + timedelta(days=int(c.cadence_days or 3))
 
-        return {
-            "draft_id": draft_id,
-            "conversation_id": conversation_id or (sent.get("conversationId") if sent else None),
-            "internet_message_id": (sent.get("internetMessageId") if sent else None),
-            "sent_message_id": (sent.get("id") if sent else None),
-        }
+        session.commit()
 
-    # ------------------------------------------------------------------
-    # Reply tracking helpers
-    # ------------------------------------------------------------------
-    def list_inbox_since(
-        self,
-        since_iso: str,
-        *,
-        top: int = 25,
-        select: str = "id,subject,from,receivedDateTime,conversationId,internetMessageId,bodyPreview",
-    ) -> Dict[str, Any]:
-        """
-        List messages received since timestamp (ISO 8601).
-        """
-        params = {
-            "$top": str(top),
-            "$select": select,
-            "$orderby": "receivedDateTime desc",
-            "$filter": f"receivedDateTime ge {since_iso}",
-        }
-        r = requests.get(f"{GRAPH}/me/mailFolders/Inbox/messages", headers=self.h, params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        log_activity(lead.id, "email_sent", f"Sent step {row.step_index}: {subject}")
+        log_event("email.sent", campaign_id=c.id, lead_id=lead.id, message="sent", data={"outbox_id": row.id, "step_index": row.step_index})
 
-    def list_inbox_by_conversation(
-        self,
-        conversation_id: str,
-        *,
-        top: int = 25,
-        select: str = "id,subject,from,receivedDateTime,conversationId,internetMessageId,bodyPreview",
-    ) -> Dict[str, Any]:
-        params = {
-            "$top": str(top),
-            "$select": select,
-            "$orderby": "receivedDateTime desc",
-            "$filter": f"conversationId eq '{conversation_id}'",
-        }
-        r = requests.get(f"{GRAPH}/me/mailFolders/Inbox/messages", headers=self.h, params=params, timeout=30)
-        r.raise_for_status()
-        return r.json()
+    except Exception as e:
+        # mark outbox failed (so the retry will still pick it up; runner will retry job)
+        try:
+            row = session.query(OutboxEmail).filter(OutboxEmail.id == outbox_id).first()
+            if row:
+                row.status = "failed"
+                row.last_error = str(e)
+                session.commit()
+        except Exception:
+            session.rollback()
 
-    # ------------------------------------------------------------------
-    # Internal: best-effort sent lookup
-    # ------------------------------------------------------------------
-    def _find_recent_sent(self, to_email: str, subject: str, minutes: int = 10) -> Optional[Dict[str, Any]]:
-        """
-        Attempts to find a very recent sent message matching recipient + subject.
-        Not perfect, but good enough for MVP; later we can store draft_id and
-        use Graph change notifications/local delta queries.
-        """
-        # Graph filter on subject exact match can be finicky; keep it simple.
-        # We'll pull recent sent items and match in code.
-        params = {
-            "$top": "25",
-            "$select": "id,subject,conversationId,internetMessageId,toRecipients,sentDateTime",
-            "$orderby": "sentDateTime desc",
-        }
-        r = requests.get(f"{GRAPH}/me/mailFolders/SentItems/messages", headers=self.h, params=params, timeout=30)
-        r.raise_for_status()
-        items = r.json().get("value", [])
+        log_event("email.error", level="ERROR", campaign_id=campaign_id, lead_id=lead_id, message=str(e))
+        raise
 
-        subj = (subject or "").strip().lower()
-        target = (to_email or "").strip().lower()
-
-        for m in items:
-            ms = (m.get("subject") or "").strip().lower()
-            if subj and ms != subj:
-                continue
-            tos = m.get("toRecipients") or []
-            to_addrs = []
-            for t in tos:
-                addr = (((t or {}).get("emailAddress") or {}).get("address") or "").strip().lower()
-                if addr:
-                    to_addrs.append(addr)
-            if target and target not in to_addrs:
-                continue
-            return m
-
-        return None
+    finally:
+        session.close()
