@@ -14,6 +14,16 @@ from app.m365.auth import M365Auth
 from app.m365.client import M365Client
 
 
+def _is_non_retryable_m365_error(msg: str) -> bool:
+    msg_l = (msg or "").lower()
+    return (
+        "m365_client_id" in msg_l
+        or "m365_tenant_id" in msg_l
+        or "not connected to microsoft 365" in msg_l
+        or ("env var" in msg_l and "m365" in msg_l)
+    )
+
+
 def handle_send_email(payload: dict):
     outbox_id = int(payload["outbox_id"])
     campaign_id = int(payload.get("campaign_id") or 0) or None
@@ -27,7 +37,13 @@ def handle_send_email(payload: dict):
             return
 
         if row.status == "sent":
-            log_event("email.idempotent", campaign_id=row.campaign_id, lead_id=row.lead_id, message="already sent", data={"outbox_id": row.id})
+            log_event(
+                "email.idempotent",
+                campaign_id=row.campaign_id,
+                lead_id=row.lead_id,
+                message="already sent",
+                data={"outbox_id": row.id},
+            )
             return
 
         c = session.query(Campaign).filter(Campaign.id == row.campaign_id).first()
@@ -43,8 +59,21 @@ def handle_send_email(payload: dict):
         # Acquire token (must already be connected via device flow in UI)
         auth = M365Auth()
         token = auth.acquire_token_silent()
+
         if not token or "access_token" not in token:
-            raise RuntimeError("Not connected to Microsoft 365 (no token). Go to Settings (M365) and connect.")
+            # NON-RETRYABLE until user connects in UI
+            row.status = "failed"
+            row.last_error = "Not connected to Microsoft 365 (no token). Go to Settings (M365) and connect."
+            session.commit()
+            log_event(
+                "email.blocked",
+                level="WARN",
+                campaign_id=row.campaign_id,
+                lead_id=row.lead_id,
+                message=row.last_error,
+                data={"outbox_id": row.id},
+            )
+            return
 
         client = M365Client(token["access_token"])
 
@@ -53,8 +82,6 @@ def handle_send_email(payload: dict):
         subject = row.subject.replace("{{first_name}}", first_name)
         body = row.body.replace("{{first_name}}", first_name)
 
-        # NOTE: your M365Client.send_mail currently doesn't return message id.
-        # If you later return message-id/thread-id, store it in provider_message_id/thread_id.
         client.send_mail(lead.email, subject, body)
 
         row.status = "sent"
@@ -72,17 +99,25 @@ def handle_send_email(payload: dict):
         log_event("email.sent", campaign_id=c.id, lead_id=lead.id, message="sent", data={"outbox_id": row.id, "step_index": row.step_index})
 
     except Exception as e:
-        # mark outbox failed (so the retry will still pick it up; runner will retry job)
+        msg = str(e)
+
+        # mark outbox failed
         try:
             row = session.query(OutboxEmail).filter(OutboxEmail.id == outbox_id).first()
             if row:
                 row.status = "failed"
-                row.last_error = str(e)
+                row.last_error = msg
                 session.commit()
         except Exception:
             session.rollback()
 
-        log_event("email.error", level="ERROR", campaign_id=campaign_id, lead_id=lead_id, message=str(e))
+        log_event("email.error", level="ERROR", campaign_id=campaign_id, lead_id=lead_id, message=msg)
+
+        # If it's config/token/env related => do NOT retry
+        if _is_non_retryable_m365_error(msg):
+            return
+
+        # Otherwise retryable
         raise
 
     finally:
