@@ -18,12 +18,6 @@ def _owner_id() -> str:
 
 
 def _extract_campaign_lead(payload: dict) -> tuple[int | None, int | None]:
-    """
-    We keep this tolerant because payloads may vary.
-    Common shapes:
-      {"campaign_id": 1, "lead_id": 2, ...}
-      {"campaign": {"id": 1}, "lead": {"id": 2}}
-    """
     campaign_id = payload.get("campaign_id")
     lead_id = payload.get("lead_id")
 
@@ -48,14 +42,9 @@ def _extract_campaign_lead(payload: dict) -> tuple[int | None, int | None]:
     return campaign_id, lead_id
 
 
-def enqueue(
-    job_type: str,
-    payload: dict,
-    run_at: datetime | None = None,
-    max_attempts: int = 8,
-) -> int:
+def enqueue(job_type: str, payload: dict, run_at: datetime | None = None, max_attempts: int = 8) -> int:
     """
-    Create a queued job. We also persist campaign_id/lead_id (if present) for easier debugging.
+    Enqueue a new job. Also stores campaign_id/lead_id (if present) for observability.
     """
     session = get_session()
     try:
@@ -98,25 +87,18 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
     Crash-safe:
     - jobs stuck in running can be reclaimed after lease expires
     """
-
     now = datetime.utcnow()
     owner = _owner_id()
     lease_expires = now + timedelta(seconds=lease_seconds)
 
     session = get_session()
-
     try:
-        # 1️⃣ Find candidate job id
+        # 1) Find a candidate job id
         candidate = (
             session.query(JobQueue.id)
             .filter(JobQueue.run_at <= now)
             .filter(JobQueue.status.in_(["queued", "running"]))
-            .filter(
-                or_(
-                    JobQueue.lease_expires_at == None,
-                    JobQueue.lease_expires_at <= now,
-                )
-            )
+            .filter(or_(JobQueue.lease_expires_at == None, JobQueue.lease_expires_at <= now))
             .order_by(JobQueue.run_at.asc(), JobQueue.id.asc())
             .first()
         )
@@ -126,18 +108,13 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
 
         job_id = candidate[0]
 
-        # 2️⃣ Try to claim it atomically
+        # 2) Try to claim it "atomically" (conditional update)
         updated = (
             session.query(JobQueue)
             .filter(JobQueue.id == job_id)
             .filter(JobQueue.run_at <= now)
             .filter(JobQueue.status.in_(["queued", "running"]))
-            .filter(
-                or_(
-                    JobQueue.lease_expires_at == None,
-                    JobQueue.lease_expires_at <= now,
-                )
-            )
+            .filter(or_(JobQueue.lease_expires_at == None, JobQueue.lease_expires_at <= now))
             .update(
                 {
                     JobQueue.status: "running",
@@ -154,9 +131,8 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
         if updated == 0:
             return None
 
-        # 3️⃣ Load full row
+        # 3) Re-read the claimed job
         job = session.query(JobQueue).filter(JobQueue.id == job_id).first()
-
         if job:
             log_event(
                 "job.claimed",
@@ -164,6 +140,7 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
                 campaign_id=job.campaign_id,
                 lead_id=job.lead_id,
                 message=f"Claimed {job.job_type}",
+                data={"owner": owner, "lease_expires_at": lease_expires.isoformat()},
             )
 
         return job
@@ -177,33 +154,6 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
         session.close()
 
 
-
-def extend_lease(job_id: int, lease_seconds: int = LEASE_SECONDS_DEFAULT) -> bool:
-    """
-    Optional: if a handler might take long, extend lease to avoid another worker reclaiming it.
-    """
-    session = get_session()
-    try:
-        now = datetime.utcnow()
-        lease_expires = now + timedelta(seconds=lease_seconds)
-        updated = (
-            session.query(JobQueue)
-            .filter(JobQueue.id == job_id)
-            .filter(JobQueue.status == "running")
-            .update(
-                {
-                    JobQueue.lease_expires_at: lease_expires,
-                    JobQueue.updated_at: now,
-                },
-                synchronize_session=False,
-            )
-        )
-        session.commit()
-        return updated > 0
-    finally:
-        session.close()
-
-
 def mark_done(job_id: int):
     session = get_session()
     try:
@@ -212,8 +162,8 @@ def mark_done(job_id: int):
             return
 
         job.status = "done"
-        job.lease_expires_at = None
         job.lease_owner = None
+        job.lease_expires_at = None
         job.updated_at = datetime.utcnow()
 
         session.commit()
@@ -238,10 +188,9 @@ def mark_failed(job_id: int, err: str, retry_at: datetime | None):
         job.attempts = (job.attempts or 0) + 1
         job.last_error = err
         job.updated_at = datetime.utcnow()
-        job.lease_expires_at = None
         job.lease_owner = None
+        job.lease_expires_at = None
 
-        # Hard fail if max attempts reached
         if job.attempts >= (job.max_attempts or 8):
             job.status = "failed"
             session.commit()
@@ -256,7 +205,6 @@ def mark_failed(job_id: int, err: str, retry_at: datetime | None):
             )
             return
 
-        # Otherwise reschedule
         job.status = "queued"
         job.run_at = retry_at or (datetime.utcnow() + timedelta(seconds=10))
         session.commit()
@@ -270,6 +218,5 @@ def mark_failed(job_id: int, err: str, retry_at: datetime | None):
             message=err,
             data={"attempts": job.attempts, "run_at": job.run_at.isoformat()},
         )
-
     finally:
         session.close()
