@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import time
 from datetime import datetime, timedelta
 
 from sqlalchemy import or_
@@ -42,28 +43,42 @@ def _extract_campaign_lead(payload: dict) -> tuple[int | None, int | None]:
     return campaign_id, lead_id
 
 
-def enqueue(job_type: str, payload: dict, run_at: datetime | None = None, max_attempts: int = 8) -> int:
-    session = get_session()
-    row = JobQueue(
-        job_type=job_type,
-        status="queued",
-        run_at=run_at or datetime.utcnow(),
-        attempts=0,
-        max_attempts=max_attempts,
-
-        # ✅ important for dedupe / visibility:
-        campaign_id=payload.get("campaign_id"),
-        lead_id=payload.get("lead_id"),
-
-        payload_json=json.dumps(payload),
-        updated_at=datetime.utcnow(),
-    )
-    session.add(row)
+def _commit_with_retry(session, tries: int = 5):
+    # SQLite can be briefly locked (DB Browser / concurrent thread). Retry a few times.
+    for i in range(tries):
+        try:
+            session.commit()
+            return
+        except OperationalError as e:
+            session.rollback()
+            if "database is locked" not in str(e).lower():
+                raise
+            time.sleep(0.15 * (i + 1))
+    # last attempt
     session.commit()
-    session.refresh(row)
-    session.close()
-    return row.id
 
+
+def enqueue(job_type: str, payload: dict, run_at: datetime | None = None, max_attempts: int = 8) -> int:
+    """
+    Insert a job. No dedupe.
+    """
+    session = get_session()
+    try:
+        campaign_id, lead_id = _extract_campaign_lead(payload)
+        row = JobQueue(
+            job_type=job_type,
+            status="queued",
+            run_at=run_at or datetime.utcnow(),
+            attempts=0,
+            max_attempts=max_attempts,
+            campaign_id=campaign_id,
+            lead_id=lead_id,
+            payload_json=json.dumps(payload),
+            updated_at=datetime.utcnow(),
+        )
+        session.add(row)
+        _commit_with_retry(session)
+        session.refresh(row)
 
         log_event(
             "job.enqueued",
@@ -71,6 +86,78 @@ def enqueue(job_type: str, payload: dict, run_at: datetime | None = None, max_at
             campaign_id=row.campaign_id,
             lead_id=row.lead_id,
             message=f"Enqueued {row.job_type}",
+            data={"run_at": row.run_at.isoformat()},
+        )
+        return row.id
+    finally:
+        session.close()
+
+
+def enqueue_unique(
+    job_type: str,
+    payload: dict,
+    *,
+    run_at: datetime | None = None,
+    max_attempts: int = 8,
+    dedupe_window_seconds: int = 3600,
+) -> int | None:
+    """
+    Dedupe: if a similar job is already queued/running "recently", don't enqueue another.
+
+    Dedupe logic:
+    - same job_type
+    - same campaign_id / lead_id (if provided)
+    - status in queued/running
+    - run_at within a window (default 1 hour lookback)
+    """
+    session = get_session()
+    try:
+        campaign_id, lead_id = _extract_campaign_lead(payload)
+        now = datetime.utcnow()
+        window_start = now - timedelta(seconds=dedupe_window_seconds)
+
+        q = (
+            session.query(JobQueue.id)
+            .filter(JobQueue.job_type == job_type)
+            .filter(JobQueue.status.in_(["queued", "running"]))
+            .filter(JobQueue.run_at >= window_start)
+        )
+        if campaign_id is None:
+            q = q.filter(JobQueue.campaign_id == None)
+        else:
+            q = q.filter(JobQueue.campaign_id == campaign_id)
+
+        if lead_id is None:
+            q = q.filter(JobQueue.lead_id == None)
+        else:
+            q = q.filter(JobQueue.lead_id == lead_id)
+
+        existing = q.order_by(JobQueue.id.desc()).first()
+        if existing:
+            # already pending
+            return None
+
+        row = JobQueue(
+            job_type=job_type,
+            status="queued",
+            run_at=run_at or now,
+            attempts=0,
+            max_attempts=max_attempts,
+            campaign_id=campaign_id,
+            lead_id=lead_id,
+            payload_json=json.dumps(payload),
+            updated_at=now,
+        )
+        session.add(row)
+        _commit_with_retry(session)
+        session.refresh(row)
+
+        log_event(
+            "job.enqueued",
+            job_id=row.id,
+            campaign_id=row.campaign_id,
+            lead_id=row.lead_id,
+            message=f"Enqueued {row.job_type} (unique)",
             data={"run_at": row.run_at.isoformat()},
         )
         return row.id
@@ -90,7 +177,6 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
 
     session = get_session()
     try:
-        # 1) Find a candidate job id
         candidate = (
             session.query(JobQueue.id)
             .filter(JobQueue.run_at <= now)
@@ -99,13 +185,11 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
             .order_by(JobQueue.run_at.asc(), JobQueue.id.asc())
             .first()
         )
-
         if not candidate:
             return None
 
         job_id = candidate[0]
 
-        # 2) Try to claim it "atomically" (conditional update)
         updated = (
             session.query(JobQueue)
             .filter(JobQueue.id == job_id)
@@ -123,12 +207,11 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
             )
         )
 
-        session.commit()
+        _commit_with_retry(session)
 
         if updated == 0:
             return None
 
-        # 3) Re-read the claimed job
         job = session.query(JobQueue).filter(JobQueue.id == job_id).first()
         if job:
             log_event(
@@ -139,14 +222,12 @@ def claim_next_job(lease_seconds: int = LEASE_SECONDS_DEFAULT) -> JobQueue | Non
                 message=f"Claimed {job.job_type}",
                 data={"owner": owner, "lease_expires_at": lease_expires.isoformat()},
             )
-
         return job
 
     except OperationalError as e:
         session.rollback()
         log_event("job.claim_error", level="WARN", message=str(e))
         return None
-
     finally:
         session.close()
 
@@ -157,20 +238,13 @@ def mark_done(job_id: int):
         job = session.query(JobQueue).filter(JobQueue.id == job_id).first()
         if not job:
             return
-
         job.status = "done"
         job.lease_owner = None
         job.lease_expires_at = None
         job.updated_at = datetime.utcnow()
+        _commit_with_retry(session)
 
-        session.commit()
-
-        log_event(
-            "job.done",
-            job_id=job_id,
-            campaign_id=job.campaign_id,
-            lead_id=job.lead_id,
-        )
+        log_event("job.done", job_id=job_id, campaign_id=job.campaign_id, lead_id=job.lead_id)
     finally:
         session.close()
 
@@ -190,7 +264,7 @@ def mark_failed(job_id: int, err: str, retry_at: datetime | None):
 
         if job.attempts >= (job.max_attempts or 8):
             job.status = "failed"
-            session.commit()
+            _commit_with_retry(session)
             log_event(
                 "job.failed",
                 level="ERROR",
@@ -204,7 +278,7 @@ def mark_failed(job_id: int, err: str, retry_at: datetime | None):
 
         job.status = "queued"
         job.run_at = retry_at or (datetime.utcnow() + timedelta(seconds=10))
-        session.commit()
+        _commit_with_retry(session)
 
         log_event(
             "job.retry_scheduled",
