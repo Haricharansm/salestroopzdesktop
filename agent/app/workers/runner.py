@@ -9,6 +9,10 @@ from datetime import datetime, timedelta
 from app.queue.job_queue import claim_next_job, mark_done, mark_failed
 from app.db.sqlite import log_event
 
+from dotenv import load_dotenv
+load_dotenv()
+
+
 # Import handlers
 from app.workers.handlers.generate_copy import handle_generate_copy
 from app.workers.handlers.send_email import handle_send_email
