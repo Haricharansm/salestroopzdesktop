@@ -8,6 +8,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Text,
+    Index,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime, timedelta
@@ -151,6 +152,8 @@ class JobQueue(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
+    # Optional composite index for faster runner scans
+Index("ix_job_queue_status_runat", JobQueue.status, JobQueue.run_at)
 
 # ----------------------------
 # Outbox (Idempotent sending)
