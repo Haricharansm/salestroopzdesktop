@@ -18,12 +18,14 @@ from app.workers.handlers.generate_copy import handle_generate_copy
 from app.workers.handlers.send_email import handle_send_email
 from app.workers.handlers.poll_replies import handle_poll_replies
 from app.workers.handlers.tick import handle_tick
+from app.workers.handlers.decide_next import handle_decide_next
 
 HANDLERS = {
     "tick": handle_tick,
     "generate_copy": handle_generate_copy,
     "send_email": handle_send_email,
     "poll_replies": handle_poll_replies,
+    "decide_next": handle_decide_next
 }
 
 # ----------------------------
