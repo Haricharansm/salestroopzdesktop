@@ -1,8 +1,15 @@
 # app/m365/client.py
 import requests
 from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
 
 GRAPH = "https://graph.microsoft.com/v1.0"
+
+def _utc_iso(dt: datetime) -> str:
+    # Graph likes: 2026-02-17T00:00:00Z
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class M365Client:
@@ -190,3 +197,7 @@ class M365Client:
             return m
 
         return None
+    def list_recent_inbox_messages(self, *, minutes: int = 10, top: int = 50) -> list[dict]:
+            since = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            data = self.list_inbox_since(_utc_iso(since), top=top)
+            return data.get("value", [])
