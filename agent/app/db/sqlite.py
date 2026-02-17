@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from datetime import datetime, timedelta
+from sqlalchemy import event
 
 from sqlalchemy import (
     create_engine,
@@ -17,6 +18,8 @@ from sqlalchemy import (
     Text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
+import time
+from sqlalchemy.exc import OperationalError
 
 
 # =============================================================================
@@ -40,11 +43,22 @@ DATABASE_URL = f"sqlite:///{DB_FILE.as_posix()}"
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30},
     future=True,
 )
+@event.listens_for(engine, "connect")
+def _sqlite_on_connect(dbapi_conn, conn_record):
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL;")
+    cur.execute("PRAGMA synchronous=NORMAL;")
+    cur.execute("PRAGMA foreign_keys=ON;")
+    cur.execute("PRAGMA busy_timeout=5000;")
+    cur.close()
+
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
+
+
 
 
 # ----------------------------
@@ -308,6 +322,7 @@ def get_session():
 # Operational Event Logger
 # =============================================================================
 
+
 def log_event(
     event_type: str,
     level: str = "INFO",
@@ -317,20 +332,32 @@ def log_event(
     message: str | None = None,
     data: dict | None = None,
 ):
-    session = get_session()
-    row = Event(
-        level=level,
-        event_type=event_type,
-        campaign_id=campaign_id,
-        lead_id=lead_id,
-        job_id=job_id,
-        message=message,
-        data_json=json.dumps(data) if data else None,
-    )
-    session.add(row)
-    session.commit()
-    session.close()
-    return True
+    for i in range(6):
+        session = get_session()
+        try:
+            row = Event(
+                level=level,
+                event_type=event_type,
+                campaign_id=campaign_id,
+                lead_id=lead_id,
+                job_id=job_id,
+                message=message,
+                data_json=json.dumps(data) if data else None,
+            )
+            session.add(row)
+            session.commit()
+            return True
+        except OperationalError as e:
+            session.rollback()
+            if "database is locked" not in str(e).lower():
+                raise
+            time.sleep(0.2 * (i + 1))  # backoff
+        finally:
+            session.close()
+
+    # If still locked after retries, don't crash the app.
+    return False
+
 
 
 # =============================================================================
