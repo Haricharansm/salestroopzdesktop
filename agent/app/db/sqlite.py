@@ -246,6 +246,41 @@ class CampaignStrategyVersion(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
+class InboxMessage(Base):
+    __tablename__ = "inbox_message"
+    id = Column(Integer, primary_key=True)
+    provider = Column(String, default="m365", index=True)
+
+    campaign_id = Column(Integer, nullable=True, index=True)
+    lead_id = Column(Integer, nullable=True, index=True)
+
+    # Correlation keys
+    from_email = Column(String, index=True)
+    subject = Column(String, nullable=True)
+    provider_message_id = Column(String, unique=True, index=True)
+    thread_id = Column(String, nullable=True, index=True)
+
+    received_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    # Raw + normalized
+    body_preview = Column(Text, nullable=True)
+    body_text = Column(Text, nullable=True)
+    raw_json = Column(Text, nullable=True)
+
+    processed = Column(Integer, default=0, index=True)  # 0/1
+
+class LeadDecision(Base):
+    __tablename__ = "lead_decision"
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("lead.id"), index=True)
+    campaign_id = Column(Integer, nullable=True, index=True)
+
+    decision = Column(String, index=True)  # POSITIVE | NEGATIVE | NEUTRAL | OOO | UNSUB | MEETING
+    confidence = Column(Integer, default=0) # 0-100
+    rationale = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
 
 # =============================================================================
 # DB Helpers / Migrations
