@@ -1,12 +1,12 @@
 # app/workers/handlers/poll_replies.py
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.db.sqlite import (
     get_session,
     Lead,
-    InboxMessage,   # assumes you have this model in sqlite.py
+    InboxMessage,
     log_event,
     log_activity,
 )
@@ -16,23 +16,15 @@ from app.m365.client import M365Client
 
 
 def extract_from_email(m: dict) -> str:
-    """
-    Graph message shape:
-    { "from": { "emailAddress": { "address": "a@b.com", "name": "..." } } }
-    """
     frm = (m.get("from") or {}).get("emailAddress") or {}
     return (frm.get("address") or "").strip().lower()
 
 
 def parse_dt(_iso: str | None) -> datetime | None:
-    """
-    Keep it simple: store UTC now if parsing fails.
-    If you want exact parsing later, we can improve this.
-    """
     if not _iso:
         return None
     try:
-        # Graph often returns: 2026-02-17T12:34:56Z
+        # Graph often: 2026-02-17T12:34:56Z
         s = _iso.replace("Z", "+00:00")
         return datetime.fromisoformat(s).replace(tzinfo=None)
     except Exception:
@@ -44,16 +36,16 @@ def handle_poll_replies(payload: dict):
     campaign_id = int(campaign_id) if campaign_id is not None else None
 
     # 1) Acquire token
-    auth = M365Auth()
-    token = auth.acquire_token_silent()
+    token = M365Auth().acquire_token_silent()
     if not token or "access_token" not in token:
         raise RuntimeError("Not connected to Microsoft 365 (no token). Go to Settings (M365) and connect.")
 
     client = M365Client(token["access_token"])
 
-    # 2) Pull recent inbox messages
-    # Requires: M365Client.list_recent_inbox_messages(minutes=10, top=50)
-    messages = client.list_recent_inbox_messages(minutes=10, top=50) or []
+    # 2) Fetch recent inbox messages (last 10 minutes)
+    since = (datetime.utcnow() - timedelta(minutes=10)).isoformat() + "Z"
+    resp = client.list_inbox_since(since_iso=since, top=50)
+    messages = resp.get("value", []) if isinstance(resp, dict) else []
 
     session = get_session()
     inserted = 0
@@ -63,7 +55,7 @@ def handle_poll_replies(payload: dict):
             if not provider_message_id:
                 continue
 
-            # 3) Dedupe by provider message id
+            # 3) Dedupe
             exists = (
                 session.query(InboxMessage)
                 .filter(InboxMessage.provider_message_id == provider_message_id)
@@ -81,16 +73,16 @@ def handle_poll_replies(payload: dict):
             if not lead:
                 continue
 
-            # optional campaign filter
+            # Optional campaign filter
             if campaign_id and lead.campaign_id != campaign_id:
                 continue
 
             received_at = parse_dt(m.get("receivedDateTime")) or datetime.utcnow()
-            body_preview = (m.get("bodyPreview") or "").strip()
             subject = (m.get("subject") or "").strip()
+            body_preview = (m.get("bodyPreview") or "").strip()
             thread_id = m.get("conversationId")
 
-            # 5) Store inbox message
+            # 5) Store InboxMessage
             im = InboxMessage(
                 provider="m365",
                 campaign_id=lead.campaign_id,
@@ -101,7 +93,7 @@ def handle_poll_replies(payload: dict):
                 thread_id=thread_id,
                 received_at=received_at,
                 body_preview=body_preview,
-                body_text=body_preview,      # MVP: keep it simple
+                body_text=body_preview,  # MVP
                 raw_json=json.dumps(m),
                 processed=0,
             )
@@ -128,10 +120,8 @@ def handle_poll_replies(payload: dict):
             message=f"poll completed, inserted={inserted}",
             data={"inserted": inserted, "window_minutes": 10, "fetched": len(messages)},
         )
-
     finally:
         session.close()
 
-    # IMPORTANT:
-    # Do NOT enqueue poll_replies again here.
-    # Scheduling is handled by tick via enqueue_unique().
+    # IMPORTANT: do NOT enqueue poll_replies here.
+    # tick schedules it using enqueue_unique().
