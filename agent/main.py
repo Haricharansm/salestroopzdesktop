@@ -1,3 +1,7 @@
+import os
+from pathlib import Path
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,13 +10,11 @@ from app.llm.ollama_client import check_ollama, generate_text
 from app.db.sqlite import init_db, save_workspace, log_event
 from app.schemas.models import WorkspaceRequest
 
-from app.m365.auth import M365Auth
+from app.m365.auth import M365Auth, SCOPES as M365_SCOPES
 from app.m365.client import M365Client
 
 from app.api.campaign_routes import router as campaign_router
 from app.api.agent_routes import router as agent_router
-
-from datetime import datetime, timedelta
 
 
 app = FastAPI(title="Salestroopz Local Agent")
@@ -111,21 +113,116 @@ def generate_campaign(prompt: str):
 # -------------------
 # M365 endpoints
 # -------------------
+def _m365_config_snapshot():
+    """
+    Returns config + cache diagnostics without requiring auth to succeed.
+    Matches your current M365Auth env keys:
+      - M365_CLIENT_ID
+      - M365_TENANT_ID
+      - TOKEN_CACHE_PATH
+    """
+    client_id = os.getenv("M365_CLIENT_ID", "")
+    tenant_id = os.getenv("M365_TENANT_ID", "common")
+    cache_path = os.getenv("TOKEN_CACHE_PATH", "./data/token_cache.json")
+
+    cache_exists = False
+    cache_size = 0
+    try:
+        p = Path(cache_path)
+        cache_exists = p.exists()
+        cache_size = p.stat().st_size if cache_exists else 0
+    except Exception:
+        pass
+
+    return {
+        "client_id_present": bool(client_id),
+        "tenant_id": tenant_id,
+        "authority": f"https://login.microsoftonline.com/{tenant_id}",
+        "token_cache_path": cache_path,
+        "token_cache_exists": cache_exists,
+        "token_cache_size": cache_size,
+        "scopes": list(M365_SCOPES),
+    }
+
+
+@app.get("/m365/scopes")
+def m365_scopes():
+    """
+    Debug endpoint: tells UI what the backend is configured to request.
+    Useful when diagnosing consent issues.
+    """
+    return _m365_config_snapshot()
+
+
 @app.get("/m365/status")
 def m365_status():
+    """
+    Reliable connection state for UI:
+      - configured flags even when not connected
+      - connected flag only if silent token works
+      - user identity (displayName/mail) when connected
+    """
+    snapshot = _m365_config_snapshot()
+
     if not m365_auth:
-        return {"connected": False, "error": "M365 not configured. Set M365_CLIENT_ID."}
+        return {
+            **snapshot,
+            "configured": False,
+            "connected": False,
+            "has_cached_account": False,
+            "error": "M365Auth not initialized. Set M365_CLIENT_ID and restart backend.",
+        }
 
-    token = m365_auth.acquire_token_silent()
-    if not token or "access_token" not in token:
-        return {"connected": False}
+    # Try silent token (no UI). This is the canonical "connected" signal.
+    try:
+        token = m365_auth.acquire_token_silent()
+    except Exception as e:
+        return {
+            **snapshot,
+            "configured": True,
+            "connected": False,
+            "has_cached_account": False,
+            "error": f"Silent token failed: {str(e)}",
+        }
 
-    client = M365Client(token["access_token"])
-    me = client.me()
-    return {
-        "connected": True,
-        "user": {"displayName": me.get("displayName"), "mail": me.get("mail")},
-    }
+    access_token = token.get("access_token") if isinstance(token, dict) else None
+    if not access_token:
+        # Determine if at least one account is cached
+        try:
+            has_account = bool(m365_auth.app.get_accounts())
+        except Exception:
+            has_account = False
+
+        return {
+            **snapshot,
+            "configured": True,
+            "connected": False,
+            "has_cached_account": has_account,
+        }
+
+    # If we have an access token, fetch profile as final confirmation
+    try:
+        client = M365Client(access_token)
+        me = client.me()
+        return {
+            **snapshot,
+            "configured": True,
+            "connected": True,
+            "has_cached_account": True,
+            "user": {
+                "displayName": me.get("displayName"),
+                "mail": me.get("mail") or me.get("userPrincipalName"),
+            },
+        }
+    except Exception as e:
+        # Token exists but profile fetch failed (rare) — still show connected=false to be safe
+        return {
+            **snapshot,
+            "configured": True,
+            "connected": False,
+            "has_cached_account": True,
+            "error": f"Token acquired but /me failed: {str(e)}",
+        }
 
 
 @app.post("/m365/device/start")
