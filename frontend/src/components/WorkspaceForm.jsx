@@ -1,36 +1,44 @@
 import { useState } from "react";
 import { createWorkspace } from "../api";
 
-export default function WorkspaceForm() {
-  const [form, setForm] = useState({
-    company_name: "",
-    industry: "",
-    target_persona: "",
-    offering: "",
-    icp: ""
-  });
+// frontend/src/components/WorkspaceForm.jsx
+export default function WorkspaceForm({ value, onChange, onSave, saving }) {
+  const v = value || {};
 
-  const handleSubmit = async () => {
-    await createWorkspace(form);
-    alert("Workspace saved");
-  };
+  const set = (k, val) => onChange({ ...v, [k]: val });
 
   return (
-    <div className="card">
-      <h2>Create Workspace</h2>
+    <div className="card" style={{ marginBottom: 12 }}>
+      <h2>Workspace (Offering + ICP)</h2>
 
-      {Object.keys(form).map((key) => (
-        <input
-          key={key}
-          placeholder={key}
-          value={form[key]}
-          onChange={(e) =>
-            setForm({ ...form, [key]: e.target.value })
-          }
-        />
-      ))}
+      <label>Company Name</label>
+      <input
+        placeholder="e.g. Saxon.AI"
+        value={v.company_name || ""}
+        onChange={(e) => set("company_name", e.target.value)}
+      />
 
-      <button onClick={handleSubmit}>Save Workspace</button>
+      <label style={{ marginTop: 10 }}>Offering</label>
+      <textarea
+        placeholder="What do you sell? To whom? Why does it matter?"
+        rows={5}
+        value={v.offering || ""}
+        onChange={(e) => set("offering", e.target.value)}
+      />
+
+      <label style={{ marginTop: 10 }}>ICP</label>
+      <textarea
+        placeholder="Industry, roles, size, triggers, pain points…"
+        rows={5}
+        value={v.icp || ""}
+        onChange={(e) => set("icp", e.target.value)}
+      />
+
+      <div className="row" style={{ marginTop: 12 }}>
+        <button className="btn primary" onClick={onSave} disabled={saving}>
+          {saving ? "Saving..." : "Save + Launch Agent"}
+        </button>
+      </div>
     </div>
   );
 }
