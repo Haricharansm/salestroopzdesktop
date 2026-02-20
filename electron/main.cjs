@@ -1,17 +1,13 @@
-// electron/main.js
-// Clean replacement file: fixes Windows port whitespace, defaults to venv python in dev,
-// and shows backend logs in dev (so you can see why API/Runner exits).
-
+/* electron/main.cjs */
 const { app, BrowserWindow, shell } = require("electron");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
 
 let mainWindow;
+let apiProc = null;
+let runnerProc = null;
 
-// -------------------------
-// Frontend dev/prod
-// -------------------------
 const DEV_URL = "http://localhost:5173";
 const PROD_INDEX = path.join(__dirname, "..", "frontend", "dist", "index.html");
 
@@ -19,10 +15,7 @@ const PROD_INDEX = path.join(__dirname, "..", "frontend", "dist", "index.html");
 // Backend (API) config
 // -------------------------
 function getApiPort() {
-  // sanitize because Windows env vars can include weird whitespace
   const raw = String(process.env.SALESTROOPZ_API_PORT ?? "8715").trim();
-
-  // allow only digits
   const digits = raw.replace(/[^\d]/g, "");
   return digits || "8715";
 }
@@ -30,30 +23,22 @@ function getApiPort() {
 const API_PORT = getApiPort();
 const API_HEALTH_URL = `http://127.0.0.1:${API_PORT}/health`;
 
-// Child processes
-let apiProc = null;
-let runnerProc = null;
-
+// -------------------------
+// Helpers
+// -------------------------
 function waitForHttpOk(url, timeoutMs = 20000) {
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
     const tryOnce = () => {
-      try {
-        http
-          .get(url, (res) => {
-            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 400) {
-              res.resume();
-              return resolve(true);
-            }
-            res.resume();
-            retry();
-          })
-          .on("error", retry);
-      } catch (e) {
-        // catches TypeError: Invalid URL (bad url string)
-        return reject(e);
-      }
+      http
+        .get(url, (res) => {
+          const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 400;
+          res.resume();
+          if (ok) return resolve(true);
+          retry();
+        })
+        .on("error", retry);
     };
 
     const retry = () => {
@@ -67,36 +52,34 @@ function waitForHttpOk(url, timeoutMs = 20000) {
   });
 }
 
-function getRepoRoot() {
-  // electron/ is one level below repo root
-  return path.join(__dirname, "..");
+function isHttpOk(url) {
+  return new Promise((resolve) => {
+    http
+      .get(url, (res) => {
+        const ok = res.statusCode && res.statusCode >= 200 && res.statusCode < 400;
+        res.resume();
+        resolve(ok);
+      })
+      .on("error", () => resolve(false));
+  });
 }
 
-function binPath(exeName) {
-  // Packaged: resources/bin/<exeName>
-  return path.join(process.resourcesPath, "bin", exeName);
+function getRepoRoot() {
+  return path.join(__dirname, "..");
 }
 
 function pythonScriptPath(scriptName) {
   return path.join(getRepoRoot(), "agent", scriptName);
 }
 
-function getDevPythonPath() {
-  // Prefer explicit override, else default to repo venv python (Windows)
-  if (process.env.SALESTROOPZ_PYTHON && String(process.env.SALESTROOPZ_PYTHON).trim()) {
-    return String(process.env.SALESTROOPZ_PYTHON).trim();
-  }
-
-  // Most common path for your setup:
-  // <repoRoot>/agent/venv/Scripts/python.exe
-  const venvPy = path.join(getRepoRoot(), "agent", "venv", "Scripts", "python.exe");
-  return venvPy;
+function binPath(exeName) {
+  return path.join(process.resourcesPath, "bin", exeName);
 }
 
 function spawnProcess(command, args, name) {
   const child = spawn(command, args, {
     windowsHide: true,
-    stdio: "ignore",
+    stdio: "inherit", // important: lets you SEE real errors (like missing dotenv)
     env: {
       ...process.env,
       SALESTROOPZ_API_PORT: API_PORT,
@@ -105,41 +88,44 @@ function spawnProcess(command, args, name) {
 
   child.on("exit", (code) => {
     if (app.isQuiting) return;
+    console.log(`[${name}] exited (${code}).`);
 
-    console.log(`[${name}] exited (${code}). restarting...`);
+    // Mark the right proc as dead
+    if (name.includes("API")) apiProc = null;
+    if (name.includes("RUNNER")) runnerProc = null;
 
-    // Only clear the one that exited
-    if (name.startsWith("API")) apiProc = null;
-    if (name.startsWith("RUNNER")) runnerProc = null;
-
+    // Do NOT restart aggressively in dev if the port is occupied by another instance.
+    // We let startBackendProcesses() decide if it needs to spawn.
     setTimeout(() => startBackendProcesses(), 1200);
   });
 
   return child;
 }
 
-function startBackendProcesses() {
-  // prevent double-spawns
-  if (apiProc && runnerProc) return;
+async function startBackendProcesses() {
+  // If API already responding, do NOT start another instance (prevents 10048 bind loop)
+  const apiAlreadyUp = await isHttpOk(API_HEALTH_URL);
 
   const isDev = !app.isPackaged;
 
   if (isDev) {
-    const py = getDevPythonPath();
+    const py = process.env.SALESTROOPZ_PYTHON || "python";
 
-    if (!apiProc) {
+    // Only spawn API if not already up
+    if (!apiAlreadyUp && !apiProc) {
+      console.log(`[API_DEV] starting on port ${API_PORT}...`);
       apiProc = spawnProcess(py, ["-u", pythonScriptPath("api_main.py")], "API_DEV");
     }
+
+    // Runner can run even if API is already up (but avoid duplicates)
     if (!runnerProc) {
+      console.log("[RUNNER_DEV] starting...");
       runnerProc = spawnProcess(py, ["-u", pythonScriptPath("worker_main.py")], "RUNNER_DEV");
     }
   } else {
-    if (!apiProc) {
-      apiProc = spawnProcess(binPath("salestroopz_api.exe"), [], "API");
-    }
-    if (!runnerProc) {
-      runnerProc = spawnProcess(binPath("salestroopz_runner.exe"), [], "RUNNER");
-    }
+    // Packaged mode uses embedded exe(s) in resources/bin
+    if (!apiProc) apiProc = spawnProcess(binPath("salestroopz_api.exe"), [], "API");
+    if (!runnerProc) runnerProc = spawnProcess(binPath("salestroopz_runner.exe"), [], "RUNNER");
   }
 }
 
@@ -154,6 +140,9 @@ function stopBackendProcesses() {
   runnerProc = null;
 }
 
+// -------------------------
+// Window
+// -------------------------
 async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
@@ -167,16 +156,15 @@ async function createWindow() {
     },
   });
 
-  // Open external links in default browser, not inside Electron window
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
   });
 
-  // Start backend processes first (API + Runner)
- await startBackendProcesses();
+  // start backend (or detect already running)
+  await startBackendProcesses();
 
-  // Wait for API to be ready
+  // Wait until API is reachable (whether we spawned it or it was already running)
   try {
     await waitForHttpOk(API_HEALTH_URL, 25000);
   } catch (err) {
@@ -184,13 +172,11 @@ async function createWindow() {
       `data:text/html,
        <h2>Backend not ready</h2>
        <p>Salestroopz API did not start on <code>${API_HEALTH_URL}</code></p>
-       <p>Try restarting the app. If in dev mode, ensure python deps are installed.</p>
        <pre>${String(err).replace(/</g, "&lt;")}</pre>`
     );
     return;
   }
 
-  // Now load frontend
   const isDev = !app.isPackaged;
 
   if (isDev) {
@@ -202,7 +188,7 @@ async function createWindow() {
       await mainWindow.loadURL(
         `data:text/html,
          <h2>Vite dev server not running</h2>
-         <p>Start it with: <code>npm run dev</code></p>
+         <p>Start it with: <code>npm run dev:ui</code></p>
          <pre>${String(err).replace(/</g, "&lt;")}</pre>`
       );
     }
@@ -211,6 +197,9 @@ async function createWindow() {
   }
 }
 
+// -------------------------
+// App lifecycle
+// -------------------------
 app.whenReady().then(async () => {
   await createWindow();
 
@@ -225,7 +214,6 @@ app.on("before-quit", () => {
 });
 
 app.on("window-all-closed", () => {
-  // On Windows/Linux we quit and stop child processes
   if (process.platform !== "darwin") {
     app.isQuiting = true;
     stopBackendProcesses();
