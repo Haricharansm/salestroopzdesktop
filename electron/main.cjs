@@ -94,13 +94,9 @@ function getDevPythonPath() {
 }
 
 function spawnProcess(command, args, name) {
-  const isDev = !app.isPackaged;
-
   const child = spawn(command, args, {
     windowsHide: true,
-    // In dev: show logs so you can see real errors.
-    // In prod: keep quiet (or change to "inherit" if you want logs in packaged too).
-    stdio: isDev ? "inherit" : "ignore",
+    stdio: "ignore",
     env: {
       ...process.env,
       SALESTROOPZ_API_PORT: API_PORT,
@@ -108,12 +104,15 @@ function spawnProcess(command, args, name) {
   });
 
   child.on("exit", (code) => {
-    if (!app.isQuiting) {
-      console.log(`[${name}] exited (${code}). restarting...`);
-      apiProc = null;
-      runnerProc = null;
-      setTimeout(() => startBackendProcesses(), 1200);
-    }
+    if (app.isQuiting) return;
+
+    console.log(`[${name}] exited (${code}). restarting...`);
+
+    // Only clear the one that exited
+    if (name.startsWith("API")) apiProc = null;
+    if (name.startsWith("RUNNER")) runnerProc = null;
+
+    setTimeout(() => startBackendProcesses(), 1200);
   });
 
   return child;
