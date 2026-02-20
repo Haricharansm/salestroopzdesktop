@@ -1,5 +1,4 @@
 const { contextBridge } = require("electron");
-
 /*
 Production-safe API base:
 - Electron main injects SALESTROOPZ_API_PORT
@@ -13,12 +12,10 @@ async function httpGet(path) {
     method: "GET",
     headers: { Accept: "application/json" },
   });
-
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`GET ${path} failed: ${res.status} ${text}`);
   }
-
   return res.json();
 }
 
@@ -31,12 +28,10 @@ async function httpPost(path, body) {
     },
     body: JSON.stringify(body ?? {}),
   });
-
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`POST ${path} failed: ${res.status} ${text}`);
   }
-
   const contentType = res.headers.get("content-type") || "";
   if (contentType.includes("application/json")) return res.json();
   return res.text();
@@ -45,12 +40,11 @@ async function httpPost(path, body) {
 contextBridge.exposeInMainWorld("salestroopz", {
   version: "0.1.0",
   apiBase: API_BASE,
-
   agent: {
     health: () => httpGet("/health"),
     ollamaStatus: () => httpGet("/ollama/status"),
     createWorkspace: (payload) => httpPost("/workspace", payload),
-
+    saveWorkspace: (payload) => httpPost("/workspace", payload),
     generateCampaign: (prompt) =>
       fetch(`${API_BASE}/campaign/generate?prompt=${encodeURIComponent(prompt)}`, {
         method: "POST",
