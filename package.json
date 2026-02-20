@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "concurrently -k \"npm:dev:ui\" \"npm:dev:api\" \"npm:dev:worker\" \"npm:dev:electron\"",
     "dev:ui": "cd frontend && npm run dev",
-    "dev:api": "cd agent && .venv\\Scripts\\uvicorn.exe app.main:app --host 127.0.0.1 --port 8715 --reload",
-    "dev:worker": "cd agent && .venv\\Scripts\\python.exe worker_main.py",
+    "dev:api": "cd agent && venv\\Scripts\\uvicorn.exe app.main:app --host 127.0.0.1 --port 8715 --reload",
+    "dev:worker": "cd agent && venv\\Scripts\\python.exe worker_main.py",
     "dev:electron": "set SALESTROOPZ_API_PORT=8715 && wait-on http://localhost:5173 && wait-on http://localhost:8715/health && electron .",
     "build": "npm run build:ui && npm run build:electron",
     "build:ui": "cd frontend && npm run build",
