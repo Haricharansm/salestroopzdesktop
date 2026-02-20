@@ -175,7 +175,7 @@ async function createWindow() {
   });
 
   // Start backend processes first (API + Runner)
-  startBackendProcesses();
+ await startBackendProcesses();
 
   // Wait for API to be ready
   try {
