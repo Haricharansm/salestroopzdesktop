@@ -57,10 +57,10 @@ export default function OrchestrationDashboard() {
 
       // 2) Launch agent => creates campaign + status running
       const res = await api.launchAgent({
-        offering: workspace.offering,
-        icp: workspace.icp,
+        offering: { text: workspace.offering },
+        icp: { text: workspace.icp },
         workspace_id: null,
-      });
+    });
 
       setCampaignId(res.campaign_id);
     } catch (e) {
