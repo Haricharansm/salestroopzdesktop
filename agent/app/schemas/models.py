@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 class WorkspaceRequest(BaseModel):
     company_name: str
@@ -7,6 +7,6 @@ class WorkspaceRequest(BaseModel):
     icp: str
 
 class AgentLaunchRequest(BaseModel):
-    offering: Dict[str, Any]
-    icp: Dict[str, Any]
+    offering: Union[str, Dict[str, Any]]
+    icp: Union[str, Dict[str, Any]]
     workspace_id: Optional[str] = None
