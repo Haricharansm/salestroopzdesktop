@@ -64,7 +64,7 @@ export default function OrchestrationDashboard() {
 
       setCampaignId(res.campaign_id);
     } catch (e) {
-      setLaunchError(e.message || String(e));
+     setLaunchError(typeof e === "string" ? e : e?.message || JSON.stringify(e));
     } finally {
       setLaunching(false);
     }
