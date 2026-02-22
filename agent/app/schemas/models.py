@@ -1,12 +1,19 @@
-from pydantic import BaseModel
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Union
+from pydantic import BaseModel, field_validator
 
-class WorkspaceRequest(BaseModel):
-    company_name: str
-    offering: str
-    icp: str
-
-class AgentLaunchRequest(BaseModel):
+class LaunchRequest(BaseModel):
+    company_name: str | None = None
     offering: Union[str, Dict[str, Any]]
     icp: Union[str, Dict[str, Any]]
-    workspace_id: Optional[str] = None
+
+    @field_validator("offering", mode="before")
+    def normalize_offering(cls, v):
+        if isinstance(v, str):
+            return {"text": v}
+        return v
+
+    @field_validator("icp", mode="before")
+    def normalize_icp(cls, v):
+        if isinstance(v, str):
+            return {"text": v}
+        return v
