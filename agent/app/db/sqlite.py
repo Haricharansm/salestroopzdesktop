@@ -449,34 +449,56 @@ def create_campaign_from_strategy(
     max_touches: int = 4,
 ):
     session = get_session()
+    try:
+        campaign = Campaign(
+            workspace_id=workspace_id,
+            name=name,
+            status=status,
+            cadence_days=cadence_days,
+            max_touches=max_touches,
+            strategy_json=json.dumps(strategy),
+            sequence_json=json.dumps(sequence),
+            run_config_json=json.dumps(run_config),
+        )
 
-    campaign = Campaign(
-        workspace_id=workspace_id,
-        name=name,
-        status=status,
-        cadence_days=cadence_days,
-        max_touches=max_touches,
-        strategy_json=json.dumps(strategy),
-        sequence_json=json.dumps(sequence),
-        run_config_json=json.dumps(run_config),
+        session.add(campaign)
+
+        # ✅ flush assigns campaign.id without ending the transaction
+        session.flush()
+        campaign_id = campaign.id
+        campaign_name = campaign.name
+        strategy_json = campaign.strategy_json
+        sequence_json = campaign.sequence_json
+        run_config_json = campaign.run_config_json
+
+        # Create strategy snapshot
+        v = CampaignStrategyVersion(
+            campaign_id=campaign_id,
+            version=1,
+            strategy_json=strategy_json,
+            sequence_json=sequence_json,
+            run_config_json=run_config_json,
+        )
+        session.add(v)
+
+        session.commit()
+
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
+
+    # ✅ log using primitives AFTER session is closed
+    log_event(
+        "campaign.created",
+        campaign_id=campaign_id,
+        message=f"Campaign created: {campaign_name}",
     )
-    session.add(campaign)
-    session.commit()
-    session.refresh(campaign)
 
-    v = CampaignStrategyVersion(
-        campaign_id=campaign.id,
-        version=1,
-        strategy_json=campaign.strategy_json,
-        sequence_json=campaign.sequence_json,
-        run_config_json=campaign.run_config_json,
-    )
-    session.add(v)
-    session.commit()
-    session.close()
-
-    log_event("campaign.created", campaign_id=campaign.id, message=f"Campaign created: {campaign.name}")
-    return campaign
+    # If other code expects the ORM object, returning it after close is risky.
+    # Return a safe primitive instead.
+    return campaign_id
 
 
 def set_campaign_status(campaign_id: int, status: str):
