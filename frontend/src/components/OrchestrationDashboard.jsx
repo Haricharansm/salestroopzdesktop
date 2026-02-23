@@ -11,10 +11,9 @@ import { api } from "../api"; // IMPORTANT: use api object
 
 export default function OrchestrationDashboard() {
   const [ollamaOk, setOllamaOk] = useState(null);
-
   const [campaignId, setCampaignId] = useState(null);
 
-  // Workspace state (THIS is what user fills)
+  // Workspace state (what user fills)
   const [workspace, setWorkspace] = useState({
     company_name: "",
     offering: "",
@@ -41,30 +40,50 @@ export default function OrchestrationDashboard() {
     return <span className="badge warn">Ollama Not Reachable</span>;
   }, [ollamaOk]);
 
+  // helper: shape expected by backend (Pydantic dict_type)
+  const launchPayloadFromWorkspace = (ws) => ({
+    company_name: ws.company_name,
+    offering: { text: ws.offering },
+    icp: { text: ws.icp },
+  });
+
   async function saveAndLaunch() {
     setLaunchError("");
 
-    // tiny validation so you don't launch blanks
-    if (!workspace.company_name || !workspace.offering || !workspace.icp) {
+    // small validation
+    if (!workspace.company_name?.trim() || !workspace.offering?.trim() || !workspace.icp?.trim()) {
       setLaunchError("Please fill Company Name, Offering, and ICP.");
       return;
     }
 
     setLaunching(true);
     try {
-      // 1) Save workspace to SQLite
-      await api.saveWorkspace(workspace);
+      // 1) Save workspace to SQLite (support both api.saveWorkspace and api.createWorkspace)
+      if (typeof api.saveWorkspace === "function") {
+        await api.saveWorkspace(workspace);
+      } else if (typeof api.createWorkspace === "function") {
+        await api.createWorkspace(workspace);
+      } else {
+        throw new Error("API misconfigured: missing saveWorkspace/createWorkspace in frontend api.js");
+      }
 
-      // 2) Launch agent => creates campaign + status running
-      const res = await api.launchAgent({
-        offering: { text: workspace.offering },
-        icp: { text: workspace.icp },
-        workspace_id: null,
-    });
+      // 2) Launch agent (backend expects offering/icp as dicts)
+      if (typeof api.launchAgent !== "function") {
+        throw new Error("API misconfigured: missing launchAgent in frontend api.js");
+      }
 
-      setCampaignId(res.campaign_id);
+      const res = await api.launchAgent(launchPayloadFromWorkspace(workspace));
+
+      // Be defensive about response shape
+      const newCampaignId = res?.campaign_id ?? res?.id ?? res?.campaignId ?? null;
+      if (!newCampaignId) {
+        // If backend returns a different object, show it
+        throw new Error(`Launch succeeded but no campaign id returned: ${JSON.stringify(res)}`);
+      }
+
+      setCampaignId(newCampaignId);
     } catch (e) {
-     setLaunchError(typeof e === "string" ? e : e?.message || JSON.stringify(e));
+      setLaunchError(e?.message || String(e));
     } finally {
       setLaunching(false);
     }
@@ -72,7 +91,6 @@ export default function OrchestrationDashboard() {
 
   return (
     <div style={{ marginTop: 14 }}>
-      {/* TOP: Workspace input (this is what you were missing) */}
       <WorkspaceForm
         value={workspace}
         onChange={setWorkspace}
@@ -88,12 +106,14 @@ export default function OrchestrationDashboard() {
 
       <div className="grid">
         <div className="card">
-          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div
+            className="row"
+            style={{ justifyContent: "space-between", alignItems: "center" }}
+          >
             <h2>Autonomous Orchestration</h2>
             {healthBadge}
           </div>
 
-          {/* Keep sequence builder if you want, but it shouldn't be the ONLY path */}
           <SequenceBuilder
             campaignId={campaignId}
             onCampaignReady={(id) => setCampaignId(id)}
