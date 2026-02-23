@@ -72,7 +72,7 @@ export default function OrchestrationDashboard() {
         throw new Error("API misconfigured: missing launchAgent in frontend api.js");
       }
 
-      const res = await api.launchAgent(launchPayloadFromWorkspace(workspace));
+      const res = await api.launchAgent({offering: workspace.offering,icp: workspace.icp,});
 
       // Be defensive about response shape
       const newCampaignId = res?.campaign_id ?? res?.id ?? res?.campaignId ?? null;
