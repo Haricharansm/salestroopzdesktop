@@ -1,11 +1,20 @@
-import { useState } from "react";
-import { createWorkspace } from "../api";
-
 // frontend/src/components/WorkspaceForm.jsx
+import { useState } from "react";
+
 export default function WorkspaceForm({ value, onChange, onSave, saving }) {
   const v = value || {};
+  const [localError, setLocalError] = useState("");
 
   const set = (k, val) => onChange({ ...v, [k]: val });
+
+  const handleSave = async () => {
+    setLocalError("");
+    try {
+      await onSave?.(); // parent should handle save+launch
+    } catch (e) {
+      setLocalError(e?.message || String(e));
+    }
+  };
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
@@ -35,10 +44,16 @@ export default function WorkspaceForm({ value, onChange, onSave, saving }) {
       />
 
       <div className="row" style={{ marginTop: 12 }}>
-        <button className="btn primary" onClick={onSave} disabled={saving}>
+        <button className="btn primary" onClick={handleSave} disabled={saving}>
           {saving ? "Saving..." : "Save + Launch Agent"}
         </button>
       </div>
+
+      {localError ? (
+        <div className="toast error" style={{ marginTop: 10 }}>
+          {localError}
+        </div>
+      ) : null}
     </div>
   );
 }
