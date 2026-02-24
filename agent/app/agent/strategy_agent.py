@@ -23,19 +23,19 @@ class StrategyAgent:
     async def generate_positioning(self, offering: dict, icp: dict) -> dict:
         return generate_json(
             prompt_positioning(offering, icp),
-            num_predict=160,
+            num_predict=512,
         )
 
     async def generate_messaging(self, offering: dict, icp: dict, positioning: dict) -> dict:
         return generate_json(
             prompt_messaging(offering, icp, positioning),
-            num_predict=220,
+            num_predict=512,
         )
 
     async def generate_sequence(self, offering: dict, icp: dict, positioning: dict, messaging: dict) -> dict:
         return generate_json(
             prompt_sequence(offering, icp, positioning, messaging),
-            num_predict=260,
+            num_predict=2048,
         )
 
     # ---------------------------------------------------
