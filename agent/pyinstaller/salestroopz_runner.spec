@@ -1,9 +1,8 @@
 # agent/pyinstaller/salestroopz_runner.spec
 # Build: salestroopz_runner.exe
-# Purpose: background worker loop (job queue / scheduler) - no Python required.
 
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = Path(SPECPATH).resolve().parent.parent  # -> agent/
 
@@ -12,19 +11,17 @@ hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("pydantic")
 hiddenimports += collect_submodules("requests")
 
+hiddenimports += collect_submodules("app")
 hiddenimports += collect_submodules("app.workers")
 hiddenimports += collect_submodules("app.queue")
 hiddenimports += collect_submodules("app.m365")
 hiddenimports += collect_submodules("app.db")
 
-datas = []
-datas += collect_data_files("app", include_py_files=True)
-
 a = Analysis(
-    ["runner_entry.py"],
+    [str(ROOT / "runner_entry.py")],   # ✅ absolute path
     pathex=[str(ROOT)],
     binaries=[],
-    datas=datas,
+    datas=[],
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
