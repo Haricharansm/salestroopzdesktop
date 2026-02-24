@@ -5,17 +5,17 @@
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
-ROOT = Path(__file__).resolve().parents[1]  # agent/
+ROOT = Path(SPECPATH).resolve().parent.parent  # -> agent/
 
 hiddenimports = []
 hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("pydantic")
+hiddenimports += collect_submodules("requests")
 
-# ✅ include your internal packages so runner doesn't crash at import time
 hiddenimports += collect_submodules("app.workers")
 hiddenimports += collect_submodules("app.queue")
 hiddenimports += collect_submodules("app.m365")
-hiddenimports += collect_submodules("requests")
+hiddenimports += collect_submodules("app.db")
 
 datas = []
 datas += collect_data_files("app", include_py_files=True)
@@ -45,7 +45,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # keep console ON for v1 visibility
+    console=True,
     disable_windowed_traceback=False,
 )
 
