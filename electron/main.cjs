@@ -3,13 +3,18 @@ const { app, BrowserWindow, shell } = require("electron");
 const path = require("path");
 const http = require("http");
 const { spawn } = require("child_process");
+const fs = require("fs");
 
 let mainWindow;
 let apiProc = null;
 let runnerProc = null;
 
 const DEV_URL = "http://localhost:5173";
-const PROD_INDEX = path.join(__dirname, "..", "frontend", "dist", "index.html");
+
+// In packaged app, vite build output is bundled under app.asar (asar=true)
+// main.cjs is located at: <resources>/app.asar/electron/main.cjs
+// dist is included via build.files => "dist/**"
+const PROD_INDEX = path.join(__dirname, "..", "dist", "index.html");
 
 // -------------------------
 // Backend (API) config
@@ -22,6 +27,31 @@ function getApiPort() {
 
 const API_PORT = getApiPort();
 const API_HEALTH_URL = `http://127.0.0.1:${API_PORT}/health`;
+
+// -------------------------
+// userData paths (CRITICAL)
+// -------------------------
+function ensureDir(p) {
+  try {
+    fs.mkdirSync(p, { recursive: true });
+  } catch {}
+}
+
+function getUserDataEnv() {
+  // Electron userData is writable. Program Files is not.
+  const ud = app.getPath("userData"); // e.g. C:\Users\X\AppData\Roaming\Salestroopz Desktop
+  const root = path.join(ud, "salestroopz");
+  ensureDir(root);
+
+  return {
+    SALESTROOPZ_USERDATA_DIR: root,
+    SQLITE_DB_FILE: path.join(root, "salestroopz.db"),
+    TOKEN_CACHE_PATH: path.join(root, "token_cache.json"),
+    SALESTROOPZ_API_PORT: API_PORT,
+    // Frontend uses this for fetch base URL
+    VITE_AGENT_URL: `http://127.0.0.1:${API_PORT}`,
+  };
+}
 
 // -------------------------
 // Helpers
@@ -69,20 +99,21 @@ function getRepoRoot() {
 }
 
 function pythonScriptPath(scriptName) {
-  return path.join(getRepoRoot(), "agent", scriptName);
+  return path.join(getRepoRoot(), "..", "agent", scriptName);
 }
 
 function binPath(exeName) {
+  // In packaged mode, process.resourcesPath points to <InstallDir>\resources
   return path.join(process.resourcesPath, "bin", exeName);
 }
 
-function spawnProcess(command, args, name) {
+function spawnProcess(command, args, name, extraEnv = {}) {
   const child = spawn(command, args, {
     windowsHide: true,
-    stdio: "inherit", // important: lets you SEE real errors (like missing dotenv)
+    stdio: "inherit",
     env: {
       ...process.env,
-      SALESTROOPZ_API_PORT: API_PORT,
+      ...extraEnv,
     },
   });
 
@@ -90,12 +121,10 @@ function spawnProcess(command, args, name) {
     if (app.isQuiting) return;
     console.log(`[${name}] exited (${code}).`);
 
-    // Mark the right proc as dead
     if (name.includes("API")) apiProc = null;
     if (name.includes("RUNNER")) runnerProc = null;
 
-    // Do NOT restart aggressively in dev if the port is occupied by another instance.
-    // We let startBackendProcesses() decide if it needs to spawn.
+    // If API crashed, we try restart; if port is already served, we won't respawn.
     setTimeout(() => startBackendProcesses(), 1200);
   });
 
@@ -103,29 +132,34 @@ function spawnProcess(command, args, name) {
 }
 
 async function startBackendProcesses() {
-  // If API already responding, do NOT start another instance (prevents 10048 bind loop)
   const apiAlreadyUp = await isHttpOk(API_HEALTH_URL);
-
   const isDev = !app.isPackaged;
+
+  const userEnv = getUserDataEnv();
 
   if (isDev) {
     const py = process.env.SALESTROOPZ_PYTHON || "python";
 
-    // Only spawn API if not already up
     if (!apiAlreadyUp && !apiProc) {
       console.log(`[API_DEV] starting on port ${API_PORT}...`);
-      apiProc = spawnProcess(py, ["-u", pythonScriptPath("api_main.py")], "API_DEV");
+      apiProc = spawnProcess(py, ["-u", pythonScriptPath("api_main.py")], "API_DEV", userEnv);
     }
 
-    // Runner can run even if API is already up (but avoid duplicates)
     if (!runnerProc) {
       console.log("[RUNNER_DEV] starting...");
-      runnerProc = spawnProcess(py, ["-u", pythonScriptPath("worker_main.py")], "RUNNER_DEV");
+      runnerProc = spawnProcess(py, ["-u", pythonScriptPath("worker_main.py")], "RUNNER_DEV", userEnv);
     }
   } else {
     // Packaged mode uses embedded exe(s) in resources/bin
-    if (!apiProc) apiProc = spawnProcess(binPath("salestroopz_api.exe"), [], "API");
-    if (!runnerProc) runnerProc = spawnProcess(binPath("salestroopz_runner.exe"), [], "RUNNER");
+    if (!apiAlreadyUp && !apiProc) {
+      console.log(`[API] starting embedded salestroopz_api.exe on port ${API_PORT}...`);
+      apiProc = spawnProcess(binPath("salestroopz_api.exe"), [], "API", userEnv);
+    }
+
+    if (!runnerProc) {
+      console.log("[RUNNER] starting embedded salestroopz_runner.exe...");
+      runnerProc = spawnProcess(binPath("salestroopz_runner.exe"), [], "RUNNER", userEnv);
+    }
   }
 }
 
@@ -161,10 +195,8 @@ async function createWindow() {
     return { action: "deny" };
   });
 
-  // start backend (or detect already running)
   await startBackendProcesses();
 
-  // Wait until API is reachable (whether we spawned it or it was already running)
   try {
     await waitForHttpOk(API_HEALTH_URL, 25000);
   } catch (err) {
@@ -188,7 +220,7 @@ async function createWindow() {
       await mainWindow.loadURL(
         `data:text/html,
          <h2>Vite dev server not running</h2>
-         <p>Start it with: <code>npm run dev:ui</code></p>
+         <p>Start it with: <code>npm run dev:electron</code></p>
          <pre>${String(err).replace(/</g, "&lt;")}</pre>`
       );
     }
