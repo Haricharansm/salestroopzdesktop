@@ -1,5 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import func
+from app.db.sqlite import get_session, Lead, LeadDecision, InboxMessage
 import csv
 import io
 
@@ -168,4 +170,47 @@ def save_sequence(campaign_id: int, req: SequenceSaveRequest):
     return {"campaign_id": c.id, "saved": True}
 
 
+@router.get("/{campaign_id}/metrics")
+def metrics(campaign_id: int):
+    session = get_session()
 
+    try:
+        total = session.query(func.count(Lead.id))\
+            .filter(Lead.campaign_id == campaign_id)\
+            .scalar() or 0
+
+        in_sequence = session.query(func.count(Lead.id))\
+            .filter(Lead.campaign_id == campaign_id)\
+            .filter(Lead.state.in_(["NEW", "WAITING_REPLY", "FOLLOWUP"]))\
+            .scalar() or 0
+
+        replies = session.query(func.count(InboxMessage.id))\
+            .filter(InboxMessage.campaign_id == campaign_id)\
+            .scalar() or 0
+
+        positive = session.query(func.count(LeadDecision.id))\
+            .filter(LeadDecision.campaign_id == campaign_id)\
+            .filter(LeadDecision.decision == "POSITIVE")\
+            .scalar() or 0
+
+        negative = session.query(func.count(LeadDecision.id))\
+            .filter(LeadDecision.campaign_id == campaign_id)\
+            .filter(LeadDecision.decision == "NEGATIVE")\
+            .scalar() or 0
+
+        meetings = session.query(func.count(LeadDecision.id))\
+            .filter(LeadDecision.campaign_id == campaign_id)\
+            .filter(LeadDecision.decision == "MEETING")\
+            .scalar() or 0
+
+        return {
+            "leadsTotal": total,
+            "inSequence": in_sequence,
+            "replied": replies,
+            "positive": positive,
+            "negative": negative,
+            "meetings": meetings,
+        }
+
+    finally:
+        session.close()
