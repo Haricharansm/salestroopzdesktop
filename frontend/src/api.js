@@ -26,19 +26,12 @@ async function httpJson(path, options = {}) {
   return data;
 }
 
-// IMPORTANT:
-// Your backend currently behaves inconsistently:
-// - /workspace seems to accept dict-like shapes (TextLike)
-// - /agent/launch is currently expecting STRINGS (based on your latest 422)
-// So: normalize per-endpoint.
 function asString(v) {
   if (typeof v === "string") return v;
   if (v && typeof v === "object") {
-    // common shapes
     if (typeof v.text === "string") return v.text;
     if (typeof v.value === "string") return v.value;
     if (typeof v.input === "string") return v.input;
-    // fallback: first string field
     for (const k of Object.keys(v)) {
       if (typeof v[k] === "string") return v[k];
     }
@@ -49,14 +42,12 @@ function asString(v) {
 function normalizeForWorkspace(payload) {
   return {
     company_name: payload.company_name ?? payload.companyName ?? "",
-    // allow string OR object
     offering: payload.offering,
     icp: payload.icp,
   };
 }
 
 function normalizeForLaunch(payload) {
-  // based on your latest error, Launch expects STRING values
   return {
     offering: asString(payload.offering),
     icp: asString(payload.icp),
@@ -76,7 +67,6 @@ export const api = {
       body: JSON.stringify(normalizeForWorkspace(payload)),
     }),
 
-  // back-compat
   saveWorkspace: (payload) =>
     httpJson("/workspace", {
       method: "POST",
@@ -95,6 +85,10 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
+  // --- NEW: Leads fetch for production UI ---
+  getCampaignLeads: (campaignId, { limit = 50, offset = 0 } = {}) =>
+    httpJson(`/campaign/${campaignId}/leads?limit=${limit}&offset=${offset}`),
+
   m365Status: () => httpJson("/m365/status"),
   m365DeviceStart: () =>
     httpJson("/m365/device/start", { method: "POST", body: JSON.stringify({}) }),
@@ -103,7 +97,6 @@ export const api = {
   m365Scopes: () => httpJson("/m365/scopes"),
 };
 
-// ✅ Named exports (this is what your error is about)
 export const createWorkspace = (payload) => api.createWorkspace(payload);
 export const saveWorkspace = (payload) => api.saveWorkspace(payload);
 export const launchAgent = (payload) => api.launchAgent(payload);
