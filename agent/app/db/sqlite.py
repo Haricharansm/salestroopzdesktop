@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
-from sqlalchemy import event
 
 from sqlalchemy import (
     create_engine,
@@ -16,27 +16,43 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Text,
+    event,
+    func,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
-import time
 from sqlalchemy.exc import OperationalError
 
 
 # =============================================================================
-# DB Location (IMPORTANT)
+# DB Location (PRODUCTION)
 # -----------------------------------------------------------------------------
-# Force the DB file to live in the agent/ folder (stable path),
-# instead of "whatever directory you launched python from".
+# Packaged desktop apps MUST NOT write to Program Files.
+# We take SALESTROOPZ_USERDATA_DIR (passed by Electron runner) as the source of truth.
+#
+# Example:
+#   SALESTROOPZ_USERDATA_DIR = C:\Users\<you>\AppData\Roaming\Salestroopz Desktop\salestroopz
+#   DB file => ...\salestroopz.db
+#
+# For dev fallback, we keep the agent/ folder DB if env is not set.
 # =============================================================================
 
 # sqlite.py is at: agent/app/db/sqlite.py
 AGENT_DIR = Path(__file__).resolve().parents[2]  # -> agent/
-DEFAULT_DB_FILE = AGENT_DIR / "salestroopz.db"
 
-# Allow override from env
+USERDATA_DIR = os.getenv("SALESTROOPZ_USERDATA_DIR", "").strip()
+if USERDATA_DIR:
+    user_dir = Path(USERDATA_DIR).expanduser().resolve()
+    user_dir.mkdir(parents=True, exist_ok=True)
+    DEFAULT_DB_FILE = user_dir / "salestroopz.db"
+else:
+    DEFAULT_DB_FILE = AGENT_DIR / "salestroopz.db"
+
+# Optional override (highest priority)
 DB_FILE = Path(os.getenv("SQLITE_DB_FILE", str(DEFAULT_DB_FILE)))
 if not DB_FILE.is_absolute():
     DB_FILE = (AGENT_DIR / DB_FILE).resolve()
+
+DB_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = f"sqlite:///{DB_FILE.as_posix()}"
 
@@ -46,6 +62,7 @@ engine = create_engine(
     connect_args={"check_same_thread": False, "timeout": 30},
     future=True,
 )
+
 @event.listens_for(engine, "connect")
 def _sqlite_on_connect(dbapi_conn, conn_record):
     cur = dbapi_conn.cursor()
@@ -57,8 +74,6 @@ def _sqlite_on_connect(dbapi_conn, conn_record):
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 Base = declarative_base()
-
-
 
 
 # ----------------------------
@@ -152,15 +167,11 @@ class ActivityLog(Base):
 # Runtime Tables
 # =============================================================================
 
-# ----------------------------
-# Durable Job Queue (SQLite-backed)
-# ----------------------------
 class JobQueue(Base):
     __tablename__ = "job_queue"
 
     id = Column(Integer, primary_key=True, index=True)
 
-    # Optional denormalized pointers (helps debugging + filtering)
     campaign_id = Column(Integer, nullable=True, index=True)
     lead_id = Column(Integer, nullable=True, index=True)
 
@@ -182,9 +193,6 @@ class JobQueue(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ----------------------------
-# Outbox (Idempotent sending)
-# ----------------------------
 class OutboxEmail(Base):
     __tablename__ = "outbox_email"
 
@@ -210,9 +218,6 @@ class OutboxEmail(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
-# ----------------------------
-# System Events (Operational logs)
-# ----------------------------
 class Event(Base):
     __tablename__ = "event"
 
@@ -230,9 +235,6 @@ class Event(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
 
-# ----------------------------
-# Versioned strategy snapshots
-# ----------------------------
 class CampaignStrategyVersion(Base):
     __tablename__ = "campaign_strategy_version"
 
@@ -246,6 +248,7 @@ class CampaignStrategyVersion(Base):
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
 class InboxMessage(Base):
     __tablename__ = "inbox_message"
     id = Column(Integer, primary_key=True)
@@ -254,7 +257,6 @@ class InboxMessage(Base):
     campaign_id = Column(Integer, nullable=True, index=True)
     lead_id = Column(Integer, nullable=True, index=True)
 
-    # Correlation keys
     from_email = Column(String, index=True)
     subject = Column(String, nullable=True)
     provider_message_id = Column(String, unique=True, index=True)
@@ -262,12 +264,12 @@ class InboxMessage(Base):
 
     received_at = Column(DateTime, default=datetime.utcnow, index=True)
 
-    # Raw + normalized
     body_preview = Column(Text, nullable=True)
     body_text = Column(Text, nullable=True)
     raw_json = Column(Text, nullable=True)
 
     processed = Column(Integer, default=0, index=True)  # 0/1
+
 
 class LeadDecision(Base):
     __tablename__ = "lead_decision"
@@ -287,11 +289,6 @@ class LeadDecision(Base):
 # =============================================================================
 
 def _set_sqlite_pragmas():
-    """
-    Recommended for production-ish SQLite on a desktop app:
-    - WAL mode for concurrency
-    - busy_timeout to reduce "database is locked"
-    """
     conn = engine.raw_connection()
     cur = conn.cursor()
     try:
@@ -324,10 +321,6 @@ def _ensure_campaign_columns():
 
 
 def _ensure_job_queue_columns():
-    """
-    Your DB already shows these columns exist in job_queue in screenshots.
-    But for anyone on an older DB, add them safely.
-    """
     conn = engine.raw_connection()
     cur = conn.cursor()
     try:
@@ -357,7 +350,6 @@ def get_session():
 # Operational Event Logger
 # =============================================================================
 
-
 def log_event(
     event_type: str,
     level: str = "INFO",
@@ -386,13 +378,11 @@ def log_event(
             session.rollback()
             if "database is locked" not in str(e).lower():
                 raise
-            time.sleep(0.2 * (i + 1))  # backoff
+            time.sleep(0.2 * (i + 1))
         finally:
             session.close()
 
-    # If still locked after retries, don't crash the app.
     return False
-
 
 
 # =============================================================================
@@ -462,25 +452,19 @@ def create_campaign_from_strategy(
         )
 
         session.add(campaign)
-
-        # ✅ flush assigns campaign.id without ending the transaction
         session.flush()
+
         campaign_id = campaign.id
         campaign_name = campaign.name
-        strategy_json = campaign.strategy_json
-        sequence_json = campaign.sequence_json
-        run_config_json = campaign.run_config_json
 
-        # Create strategy snapshot
         v = CampaignStrategyVersion(
             campaign_id=campaign_id,
             version=1,
-            strategy_json=strategy_json,
-            sequence_json=sequence_json,
-            run_config_json=run_config_json,
+            strategy_json=campaign.strategy_json,
+            sequence_json=campaign.sequence_json,
+            run_config_json=campaign.run_config_json,
         )
         session.add(v)
-
         session.commit()
 
     except Exception:
@@ -489,15 +473,7 @@ def create_campaign_from_strategy(
     finally:
         session.close()
 
-    # ✅ log using primitives AFTER session is closed
-    log_event(
-        "campaign.created",
-        campaign_id=campaign_id,
-        message=f"Campaign created: {campaign_name}",
-    )
-
-    # If other code expects the ORM object, returning it after close is risky.
-    # Return a safe primitive instead.
+    log_event("campaign.created", campaign_id=campaign_id, message=f"Campaign created: {campaign_name}")
     return campaign_id
 
 
@@ -626,6 +602,23 @@ def list_leads(campaign_id: int):
     )
     session.close()
     return leads
+
+
+def list_leads_page(campaign_id: int, limit: int = 50, offset: int = 0):
+    session = get_session()
+    try:
+        q = session.query(Lead).filter(Lead.campaign_id == campaign_id)
+        total = q.with_entities(func.count(Lead.id)).scalar() or 0
+
+        rows = (
+            q.order_by(Lead.created_at.desc())
+             .offset(offset)
+             .limit(limit)
+             .all()
+        )
+        return rows, int(total)
+    finally:
+        session.close()
 
 
 def get_due_leads(campaign_id: int, limit: int = 10):
