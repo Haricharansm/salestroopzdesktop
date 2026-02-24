@@ -26,6 +26,8 @@ async function httpJson(path, options = {}) {
   return data;
 }
 
+// IMPORTANT:
+// Your backend has mixed shapes for workspace/launch. Keep normalization.
 function asString(v) {
   if (typeof v === "string") return v;
   if (v && typeof v === "object") {
@@ -85,9 +87,13 @@ export const api = {
       body: JSON.stringify({}),
     }),
 
-  // --- NEW: Leads fetch for production UI ---
+  // ✅ Production: paginated leads
   getCampaignLeads: (campaignId, { limit = 50, offset = 0 } = {}) =>
     httpJson(`/campaign/${campaignId}/leads?limit=${limit}&offset=${offset}`),
+
+  // ✅ Production: activity feed
+  getCampaignActivity: (campaignId, { limit = 200 } = {}) =>
+    httpJson(`/campaign/${campaignId}/activity?limit=${limit}`),
 
   m365Status: () => httpJson("/m365/status"),
   m365DeviceStart: () =>
