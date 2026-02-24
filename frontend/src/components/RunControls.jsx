@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
+import { api } from "../api";
 
-const API_BASE = import.meta.env.VITE_AGENT_URL || "http://127.0.0.1:8715";
-
+/**
+ * Production RunControls
+ * - Source of truth: backend campaign status
+ * - Minimal UI by default: Start / Pause / Stop + status
+ * - Advanced config is hidden (v1)
+ */
 export default function RunControls({ campaignId }) {
-  const [state, setState] = useState("idle"); // idle | running | paused
+  const [status, setStatus] = useState("draft"); // draft | running | paused | stopped | ...
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // Hidden-by-default config (v1)
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [config, setConfig] = useState({
     dailyLimit: 80,
     concurrency: 4,
@@ -16,17 +23,42 @@ export default function RunControls({ campaignId }) {
     autoBookMeeting: true,
   });
 
-  const badgeText = useMemo(() => (campaignId ? state.toUpperCase() : "NO CAMPAIGN"), [state, campaignId]);
+  const badge = useMemo(() => {
+    if (!campaignId) return { text: "NO CAMPAIGN", cls: "warn" };
+    if (status === "running") return { text: "RUNNING", cls: "good" };
+    if (status === "paused") return { text: "PAUSED", cls: "warn" };
+    if (status === "stopped") return { text: "STOPPED", cls: "warn" };
+    return { text: (status || "DRAFT").toUpperCase(), cls: "" };
+  }, [campaignId, status]);
 
-  // Optional: if you later add GET /campaign/{id} to fetch status, you can refresh here.
+  async function refreshStatus() {
+    if (!campaignId) return;
+    try {
+      // Requires backend GET /campaign/{id} (added below). If not available yet, we fail silently.
+      const data = await fetch(`${api.baseUrl}/campaign/${campaignId}`, { method: "GET" })
+        .then(async (r) => {
+          const ct = r.headers.get("content-type") || "";
+          const body = ct.includes("application/json") ? await r.json().catch(() => ({})) : await r.text().catch(() => "");
+          if (!r.ok) throw new Error(typeof body === "string" ? body : body?.detail || "Failed to fetch campaign");
+          return body;
+        });
+
+      if (data?.status) setStatus(data.status);
+    } catch {
+      // If endpoint isn't present yet, leave status as-is.
+    }
+  }
+
   useEffect(() => {
     setMsg("");
-    if (!campaignId) setState("idle");
+    if (!campaignId) setStatus("draft");
+    if (campaignId) refreshStatus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [campaignId]);
 
   const start = async () => {
     if (!campaignId) {
-      setMsg("⚠️ Create/select a campaign first (save sequence).");
+      setMsg("⚠️ Launch a campaign first.");
       return;
     }
 
@@ -34,20 +66,18 @@ export default function RunControls({ campaignId }) {
       setLoading(true);
       setMsg("");
 
-      // 1) Start campaign run
-      const res = await fetch(`${API_BASE}/campaign/${campaignId}/start`, {
+      const data = await fetch(`${api.baseUrl}/campaign/${campaignId}/start`, {
         method: "POST",
+      }).then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body?.detail || "Failed to start campaign");
+        return body;
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.detail || "Failed to start campaign");
 
-      // 2) (Optional, Phase-2) Save run config to backend if you add an endpoint:
-      // await fetch(`${API_BASE}/campaign/${campaignId}/run-config`, { ... })
-
-      setState("running");
-      setMsg("✅ Run started. Agent will begin processing due leads.");
+      setStatus(data?.status || "running");
+      setMsg("✅ Campaign started.");
     } catch (e) {
-      setMsg(`❌ ${e.message}`);
+      setMsg(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
@@ -60,143 +90,169 @@ export default function RunControls({ campaignId }) {
       setLoading(true);
       setMsg("");
 
-      const res = await fetch(`${API_BASE}/campaign/${campaignId}/pause`, {
+      const data = await fetch(`${api.baseUrl}/campaign/${campaignId}/pause`, {
         method: "POST",
+      }).then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body?.detail || "Failed to pause campaign");
+        return body;
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.detail || "Failed to pause campaign");
 
-      setState("paused");
-      setMsg("⏸️ Paused.");
+      setStatus(data?.status || "paused");
+      setMsg("⏸️ Campaign paused.");
     } catch (e) {
-      setMsg(`❌ ${e.message}`);
+      setMsg(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
   };
 
   const stop = async () => {
-    // For MVP we map Stop -> paused (or add /stop endpoint later)
+    // v1 behavior: if you add /stop later, call it. For now we map Stop -> paused.
     if (!campaignId) return;
 
     try {
       setLoading(true);
       setMsg("");
 
-      // If you add /campaign/{id}/stop endpoint later, call it here.
-      // For now, set to paused (safe stop)
-      const res = await fetch(`${API_BASE}/campaign/${campaignId}/pause`, {
+      const data = await fetch(`${api.baseUrl}/campaign/${campaignId}/pause`, {
         method: "POST",
+      }).then(async (r) => {
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(body?.detail || "Failed to stop campaign");
+        return body;
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.detail || "Failed to stop campaign");
 
-      setState("idle");
-      setMsg("🛑 Stopped (set to paused/idle).");
+      setStatus(data?.status || "paused");
+      setMsg("🛑 Campaign stopped (paused).");
     } catch (e) {
-      setMsg(`❌ ${e.message}`);
+      setMsg(`❌ ${e?.message || String(e)}`);
     } finally {
       setLoading(false);
     }
   };
 
+  const canStart = campaignId && status !== "running";
+  const canPause = campaignId && status === "running";
+  const canStop = campaignId && status !== "draft";
+
   return (
     <div>
       <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <h2>Run Controls</h2>
-        <span className="badge">{badgeText}</span>
+        <h2 style={{ marginBottom: 0 }}>Campaign Controls</h2>
+        <span className={`badge ${badge.cls}`}>{badge.text}</span>
       </div>
 
       {!campaignId ? (
         <p style={{ marginTop: 8, opacity: 0.85 }}>
-          Create a campaign first (Save Sequence). Then you can Start/Pause the run.
+          Launch a campaign first. Then you can start or pause it from here.
         </p>
       ) : null}
 
-      <div className="row">
-        <div className="col">
-          <label>Daily Send Limit</label>
-          <input
-            type="number"
-            value={config.dailyLimit}
-            onChange={(e) => setConfig({ ...config, dailyLimit: Number(e.target.value) })}
-            disabled={loading}
-          />
-        </div>
-        <div className="col">
-          <label>Parallel Workers</label>
-          <input
-            type="number"
-            value={config.concurrency}
-            onChange={(e) => setConfig({ ...config, concurrency: Number(e.target.value) })}
-            disabled={loading}
-          />
-        </div>
-      </div>
-
-      <div className="row">
-        <div className="col">
-          <label>Quiet Hours Start</label>
-          <input
-            type="time"
-            value={config.quietHoursStart}
-            onChange={(e) => setConfig({ ...config, quietHoursStart: e.target.value })}
-            disabled={loading}
-          />
-        </div>
-        <div className="col">
-          <label>Quiet Hours End</label>
-          <input
-            type="time"
-            value={config.quietHoursEnd}
-            onChange={(e) => setConfig({ ...config, quietHoursEnd: e.target.value })}
-            disabled={loading}
-          />
-        </div>
-      </div>
-
-      <div className="row">
-        <div className="col">
-          <label>Stop on negative response</label>
-          <select
-            value={String(config.stopOnNegative)}
-            onChange={(e) => setConfig({ ...config, stopOnNegative: e.target.value === "true" })}
-            disabled={loading}
-          >
-            <option value="true">Yes</option>
-            <option value="false">No (manual review)</option>
-          </select>
-        </div>
-        <div className="col">
-          <label>Auto-book meeting on positive intent</label>
-          <select
-            value={String(config.autoBookMeeting)}
-            onChange={(e) => setConfig({ ...config, autoBookMeeting: e.target.value === "true" })}
-            disabled={loading}
-          >
-            <option value="true">Yes</option>
-            <option value="false">No (request approval)</option>
-          </select>
-        </div>
-      </div>
-
       <div className="row" style={{ marginTop: 10 }}>
-        <button className="btn primary" onClick={start} disabled={loading || !campaignId || state === "running"}>
-          {loading && state !== "paused" ? "Starting..." : "Start"}
+        <button className="btn primary" onClick={start} disabled={loading || !canStart}>
+          {loading && canStart ? "Starting..." : "Start"}
         </button>
-        <button className="btn" onClick={pause} disabled={loading || !campaignId || state !== "running"}>
+        <button className="btn" onClick={pause} disabled={loading || !canPause}>
           Pause
         </button>
-        <button className="btn danger" onClick={stop} disabled={loading || !campaignId || state === "idle"}>
+        <button className="btn danger" onClick={stop} disabled={loading || !canStop}>
           Stop
+        </button>
+
+        <button
+          className="btn"
+          style={{ marginLeft: "auto" }}
+          onClick={refreshStatus}
+          disabled={!campaignId || loading}
+          title="Refresh campaign status"
+        >
+          Refresh
         </button>
       </div>
 
       {msg ? <p style={{ marginTop: 10 }}>{msg}</p> : null}
 
-      <p style={{ marginTop: 10 }}>
-        This will orchestrate the loop: generate → send → wait → detect reply → branch → repeat until meeting or “no”.
-      </p>
+      <div style={{ marginTop: 12 }}>
+        <button className="btn" onClick={() => setShowAdvanced(!showAdvanced)}>
+          {showAdvanced ? "Hide Advanced" : "Advanced"}
+        </button>
+
+        {showAdvanced ? (
+          <div className="card" style={{ marginTop: 10 }}>
+            <div className="row">
+              <div className="col">
+                <label>Daily Send Limit</label>
+                <input
+                  type="number"
+                  value={config.dailyLimit}
+                  onChange={(e) => setConfig({ ...config, dailyLimit: Number(e.target.value) })}
+                  disabled={loading}
+                />
+              </div>
+              <div className="col">
+                <label>Parallel Workers</label>
+                <input
+                  type="number"
+                  value={config.concurrency}
+                  onChange={(e) => setConfig({ ...config, concurrency: Number(e.target.value) })}
+                  disabled={loading}
+                />
+              </div>
+            </div>
+
+            <div className="row">
+              <div className="col">
+                <label>Quiet Hours Start</label>
+                <input
+                  type="time"
+                  value={config.quietHoursStart}
+                  onChange={(e) => setConfig({ ...config, quietHoursStart: e.target.value })}
+                  disabled={loading}
+                />
+              </div>
+              <div className="col">
+                <label>Quiet Hours End</label>
+                <input
+                  type="time"
+                  value={config.quietHoursEnd}
+                  onChange={(e) => setConfig({ ...config, quietHoursEnd: e.target.value })}
+                  disabled={loading}
+                />
+              </div>
+            </div>
+
+            <div className="row">
+              <div className="col">
+                <label>Stop on negative response</label>
+                <select
+                  value={String(config.stopOnNegative)}
+                  onChange={(e) => setConfig({ ...config, stopOnNegative: e.target.value === "true" })}
+                  disabled={loading}
+                >
+                  <option value="true">Yes</option>
+                  <option value="false">No (manual review)</option>
+                </select>
+              </div>
+              <div className="col">
+                <label>Auto-book meeting on positive intent</label>
+                <select
+                  value={String(config.autoBookMeeting)}
+                  onChange={(e) => setConfig({ ...config, autoBookMeeting: e.target.value === "true" })}
+                  disabled={loading}
+                >
+                  <option value="true">Yes</option>
+                  <option value="false">No (request approval)</option>
+                </select>
+              </div>
+            </div>
+
+            <div style={{ color: "#777", marginTop: 8, fontSize: 13 }}>
+              Advanced settings are v1 placeholders unless you wire a run-config endpoint.
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
