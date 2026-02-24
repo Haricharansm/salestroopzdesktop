@@ -95,6 +95,9 @@ export const api = {
   getCampaignActivity: (campaignId, { limit = 200 } = {}) =>
     httpJson(`/campaign/${campaignId}/activity?limit=${limit}`),
 
+  getCampaignMetrics: (campaignId) =>
+    httpJson(`/campaign/${campaignId}/metrics`),
+
   m365Status: () => httpJson("/m365/status"),
   m365DeviceStart: () =>
     httpJson("/m365/device/start", { method: "POST", body: JSON.stringify({}) }),
