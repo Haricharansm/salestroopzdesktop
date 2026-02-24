@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API_BASE = import.meta.env.VITE_AGENT_URL || "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_AGENT_URL || "http://127.0.0.1:8715";
 
 export default function RunControls({ campaignId }) {
   const [state, setState] = useState("idle"); // idle | running | paused
