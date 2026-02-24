@@ -53,6 +53,20 @@ def pause(campaign_id: int):
         raise HTTPException(status_code=404, detail="Campaign not found")
     return {"campaign_id": c.id, "status": c.status}
 
+@router.get("/{campaign_id}")
+def get_campaign_status(campaign_id: int):
+    c = get_campaign(campaign_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return {
+        "campaign_id": c.id,
+        "workspace_id": c.workspace_id,
+        "name": c.name,
+        "status": c.status,
+        "cadence_days": c.cadence_days,
+        "max_touches": c.max_touches,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+    }
 
 @router.get("/{campaign_id}/leads")
 def leads(campaign_id: int, limit: int | None = None, offset: int | None = None):
@@ -152,3 +166,6 @@ def save_sequence(campaign_id: int, req: SequenceSaveRequest):
     if not c:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return {"campaign_id": c.id, "saved": True}
+
+
+
