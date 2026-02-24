@@ -1,11 +1,18 @@
 # agent/runner_entry.py
 import os
 import sys
-import time
 from pathlib import Path
 
 
 def _ensure_userdata_defaults():
+    """
+    Electron packaged mode sets:
+      - SALESTROOPZ_USERDATA_DIR
+      - SQLITE_DB_FILE
+      - TOKEN_CACHE_PATH
+
+    Provide safe fallbacks for CLI/dev.
+    """
     user_dir = os.getenv("SALESTROOPZ_USERDATA_DIR", "").strip()
     if user_dir:
         p = Path(user_dir).expanduser().resolve()
@@ -23,26 +30,10 @@ def _ensure_userdata_defaults():
 def main():
     _ensure_userdata_defaults()
 
-    # Preferred: call your existing worker entry if it exists.
-    # This is what Electron runs in dev: python -u agent/worker_main.py
-    try:
-        import worker_main  # noqa: F401
-        if hasattr(worker_main, "main"):
-            print("[salestroopz_runner] starting worker_main.main()")
-            worker_main.main()
-            return
-        if hasattr(worker_main, "run"):
-            print("[salestroopz_runner] starting worker_main.run()")
-            worker_main.run()
-            return
-        print("[salestroopz_runner] worker_main imported but no main()/run() found; falling back to idle loop")
-    except Exception as e:
-        print(f"[salestroopz_runner] worker_main not available ({e}); falling back to idle loop")
+    # Run the same entrypoint Electron uses in dev mode.
+    from worker_main import main as worker_main
 
-    # Fallback: keep process alive (so Electron doesn't constantly respawn it)
-    print("[salestroopz_runner] idle loop running (no worker_main wired).")
-    while True:
-        time.sleep(10)
+    worker_main()
 
 
 if __name__ == "__main__":
