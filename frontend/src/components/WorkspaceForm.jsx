@@ -1,7 +1,17 @@
 // frontend/src/components/WorkspaceForm.jsx
 import { useState } from "react";
 
-export default function WorkspaceForm({ value, onChange, onSave, saving }) {
+/**
+ * Reusable workspace form.
+ * Parent controls button label + save behavior (save-only or save+continue etc.)
+ */
+export default function WorkspaceForm({
+  value,
+  onChange,
+  onSave,
+  saving,
+  primaryLabel = "Save",
+}) {
   const v = value || {};
   const [localError, setLocalError] = useState("");
 
@@ -10,16 +20,14 @@ export default function WorkspaceForm({ value, onChange, onSave, saving }) {
   const handleSave = async () => {
     setLocalError("");
     try {
-      await onSave?.(); // parent should handle save+launch
+      await onSave?.();
     } catch (e) {
       setLocalError(e?.message || String(e));
     }
   };
 
   return (
-    <div className="card" style={{ marginBottom: 12 }}>
-      <h2>Workspace (Offering + ICP)</h2>
-
+    <div>
       <label>Company Name</label>
       <input
         placeholder="e.g. Saxon.AI"
@@ -45,7 +53,7 @@ export default function WorkspaceForm({ value, onChange, onSave, saving }) {
 
       <div className="row" style={{ marginTop: 12 }}>
         <button className="btn primary" onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save + Launch Agent"}
+          {saving ? "Saving..." : primaryLabel}
         </button>
       </div>
 
