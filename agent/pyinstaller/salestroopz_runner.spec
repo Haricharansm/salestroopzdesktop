@@ -11,11 +11,17 @@ hiddenimports = []
 hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("pydantic")
 
+# ✅ include your internal packages so runner doesn't crash at import time
+hiddenimports += collect_submodules("app.workers")
+hiddenimports += collect_submodules("app.queue")
+hiddenimports += collect_submodules("app.m365")
+hiddenimports += collect_submodules("requests")
+
 datas = []
 datas += collect_data_files("app", include_py_files=True)
 
 a = Analysis(
-    ["runner_entry.py"],  # we will add this entry script next
+    ["runner_entry.py"],
     pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
