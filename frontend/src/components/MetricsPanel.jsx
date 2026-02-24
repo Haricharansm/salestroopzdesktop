@@ -1,14 +1,58 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../api";
 
-export default function MetricsPanel() {
-  const [m] = useState({
-    leadsTotal: 120,
-    inSequence: 34,
-    replied: 11,
-    positive: 4,
-    negative: 6,
-    meetings: 2,
+/**
+ * Production Metrics Panel
+ * Fetches: GET /campaign/{id}/metrics
+ */
+export default function MetricsPanel({ campaignId }) {
+  const [m, setM] = useState({
+    leadsTotal: 0,
+    inSequence: 0,
+    replied: 0,
+    positive: 0,
+    negative: 0,
+    meetings: 0,
   });
+
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function load() {
+    if (!campaignId) return;
+
+    setErr("");
+    setLoading(true);
+
+    try {
+      const data = await api.getCampaignMetrics(campaignId);
+      setM({
+        leadsTotal: data?.leadsTotal ?? 0,
+        inSequence: data?.inSequence ?? 0,
+        replied: data?.replied ?? 0,
+        positive: data?.positive ?? 0,
+        negative: data?.negative ?? 0,
+        meetings: data?.meetings ?? 0,
+      });
+    } catch (e) {
+      setErr(e?.message || String(e));
+      setM({
+        leadsTotal: 0,
+        inSequence: 0,
+        replied: 0,
+        positive: 0,
+        negative: 0,
+        meetings: 0,
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId]);
 
   const cards = useMemo(
     () => [
@@ -24,15 +68,47 @@ export default function MetricsPanel() {
 
   return (
     <div>
-      <h2>Outcomes</h2>
-      <div className="row">
-        {cards.map((c) => (
-          <div key={c.k} className="card" style={{ padding: 10, minWidth: 140 }}>
-            <div className="mono" style={{ color: "var(--muted)" }}>{c.k}</div>
-            <div style={{ fontSize: 20, fontWeight: 800 }}>{c.v}</div>
-          </div>
-        ))}
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ marginBottom: 0 }}>Outcomes</h2>
+        <button
+          className="btn"
+          onClick={load}
+          disabled={!campaignId || loading}
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
       </div>
+
+      {err ? (
+        <div className="card" style={{ marginTop: 10 }}>
+          <span className="badge warn">{err}</span>
+        </div>
+      ) : null}
+
+      {!campaignId ? (
+        <p style={{ marginTop: 8, opacity: 0.85 }}>
+          Launch a campaign to see performance metrics.
+        </p>
+      ) : null}
+
+      {campaignId ? (
+        <div className="row" style={{ marginTop: 10 }}>
+          {cards.map((c) => (
+            <div
+              key={c.k}
+              className="card"
+              style={{ padding: 10, minWidth: 140 }}
+            >
+              <div className="mono" style={{ color: "var(--muted)" }}>
+                {c.k}
+              </div>
+              <div style={{ fontSize: 20, fontWeight: 800 }}>
+                {c.v}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
