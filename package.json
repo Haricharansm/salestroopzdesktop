@@ -38,15 +38,15 @@
       "electron/**"
     ],
     "extraResources": [
-      {
-        "from": "agent/dist/salestroopz_api/salestroopz_api.exe",
-        "to": "bin/salestroopz_api.exe"
-      },
-      {
-        "from": "agent/dist/salestroopz_runner/salestroopz_runner.exe",
-        "to": "bin/salestroopz_runner.exe"
-      }
-    ],
+    {
+    "from": "dist/salestroopz_api/salestroopz_api.exe",
+    "to": "bin/salestroopz_api.exe"
+    },
+    {
+    "from": "dist/salestroopz_runner/salestroopz_runner.exe",
+    "to": "bin/salestroopz_runner.exe"
+    }
+  ],
     "win": {
       "target": [
         "nsis"
