@@ -1,25 +1,25 @@
 # agent/pyinstaller/salestroopz_runner.spec
-# Build: salestroopz_runner.exe
-
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
-ROOT = Path(SPECPATH).resolve().parent.parent  # -> agent/
+SPEC_DIR = Path(SPECPATH).resolve()   # ...\agent\pyinstaller
+AGENT_DIR = SPEC_DIR.parent          # ...\agent
+ENTRY = AGENT_DIR / "runner_entry.py"
+
+print(">>> SPEC_DIR:", SPEC_DIR)
+print(">>> AGENT_DIR:", AGENT_DIR)
+print(">>> ENTRY:", ENTRY, "exists:", ENTRY.exists())
 
 hiddenimports = []
-hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("pydantic")
+hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("requests")
-
+hiddenimports += collect_submodules("msal")
 hiddenimports += collect_submodules("app")
-hiddenimports += collect_submodules("app.workers")
-hiddenimports += collect_submodules("app.queue")
-hiddenimports += collect_submodules("app.m365")
-hiddenimports += collect_submodules("app.db")
 
 a = Analysis(
-    [str(ROOT / "runner_entry.py")],   # ✅ absolute path
-    pathex=[str(ROOT)],
+    [str(ENTRY)],
+    pathex=[str(AGENT_DIR)],
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,
@@ -39,11 +39,9 @@ exe = EXE(
     exclude_binaries=True,
     name="salestroopz_runner",
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
-    disable_windowed_traceback=False,
+    console=True
 )
 
 coll = COLLECT(
