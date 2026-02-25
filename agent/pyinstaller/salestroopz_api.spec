@@ -1,12 +1,15 @@
 # agent/pyinstaller/salestroopz_api.spec
-# Build: salestroopz_api.exe
-
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_submodules
 
-ROOT = Path(SPECPATH).resolve().parent.parent  # -> agent/
+SPEC_DIR = Path(SPECPATH).resolve()              # ...\agent\pyinstaller
+AGENT_DIR = SPEC_DIR.parent                      # ...\agent
+ENTRY = AGENT_DIR / "api_entry.py"               # ...\agent\api_entry.py
 
-# --- Hidden imports (prevent "module not found" at runtime) ---
+print(">>> SPEC_DIR:", SPEC_DIR)
+print(">>> AGENT_DIR:", AGENT_DIR)
+print(">>> ENTRY:", ENTRY, "exists:", ENTRY.exists())
+
 hiddenimports = []
 hiddenimports += collect_submodules("uvicorn")
 hiddenimports += collect_submodules("fastapi")
@@ -15,20 +18,11 @@ hiddenimports += collect_submodules("pydantic")
 hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("msal")
 hiddenimports += collect_submodules("requests")
-
-# Your internal packages
 hiddenimports += collect_submodules("app")
-hiddenimports += collect_submodules("app.api")
-hiddenimports += collect_submodules("app.m365")
-hiddenimports += collect_submodules("app.llm")
-hiddenimports += collect_submodules("app.schemas")
-hiddenimports += collect_submodules("app.db")
-hiddenimports += collect_submodules("app.workers")
-hiddenimports += collect_submodules("app.queue")
 
 a = Analysis(
-    [str(ROOT / "api_entry.py")],   # ✅ absolute path
-    pathex=[str(ROOT)],
+    [str(ENTRY)],               # ✅ absolute path
+    pathex=[str(AGENT_DIR)],    # ✅ agent/ on sys.path
     binaries=[],
     datas=[],
     hiddenimports=hiddenimports,
@@ -48,11 +42,9 @@ exe = EXE(
     exclude_binaries=True,
     name="salestroopz_api",
     debug=False,
-    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,
-    disable_windowed_traceback=False,
+    console=True
 )
 
 coll = COLLECT(
