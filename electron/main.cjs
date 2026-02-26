@@ -11,10 +11,10 @@ let runnerProc = null;
 
 const DEV_URL = "http://localhost:5173";
 
-// In packaged app, vite build output is bundled under app.asar (asar=true)
-// main.cjs is located at: <resources>/app.asar/electron/main.cjs
-// dist is included via build.files => "dist/**"
-const PROD_INDEX = path.join(__dirname, "..", "dist", "index.html");
+// Packaged app:
+// main.cjs => <resources>/app.asar/electron/main.cjs
+// vite build output => <resources>/app.asar/frontend/dist/index.html
+const PROD_INDEX = path.join(__dirname, "..", "frontend", "dist", "index.html");
 
 // -------------------------
 // Backend (API) config
@@ -38,8 +38,7 @@ function ensureDir(p) {
 }
 
 function getUserDataEnv() {
-  // Electron userData is writable. Program Files is not.
-  const ud = app.getPath("userData"); // e.g. C:\Users\X\AppData\Roaming\Salestroopz Desktop
+  const ud = app.getPath("userData");
   const root = path.join(ud, "salestroopz");
   ensureDir(root);
 
@@ -48,7 +47,6 @@ function getUserDataEnv() {
     SQLITE_DB_FILE: path.join(root, "salestroopz.db"),
     TOKEN_CACHE_PATH: path.join(root, "token_cache.json"),
     SALESTROOPZ_API_PORT: API_PORT,
-    // Frontend uses this for fetch base URL
     VITE_AGENT_URL: `http://127.0.0.1:${API_PORT}`,
   };
 }
@@ -95,16 +93,19 @@ function isHttpOk(url) {
 }
 
 function getRepoRoot() {
+  // dev: __dirname = <repo>/electron => repo root is ..
+  // packaged: __dirname = <resources>/app.asar/electron => app.asar is ..
   return path.join(__dirname, "..");
 }
 
 function pythonScriptPath(scriptName) {
-  return path.join(getRepoRoot(), "..", "agent", scriptName);
+  // ✅ FIX: dev scripts are at <repo>/agent/<scriptName>
+  return path.join(getRepoRoot(), "agent", scriptName);
 }
 
-function binPath(exeName) {
-  // In packaged mode, process.resourcesPath points to <InstallDir>\resources
-  return path.join(process.resourcesPath, "bin", exeName);
+function binPath(relPath) {
+  // ✅ Accept nested paths: "salestroopz_api/salestroopz_api.exe"
+  return path.join(process.resourcesPath, "bin", relPath);
 }
 
 function spawnProcess(command, args, name, extraEnv = {}) {
@@ -124,7 +125,6 @@ function spawnProcess(command, args, name, extraEnv = {}) {
     if (name.includes("API")) apiProc = null;
     if (name.includes("RUNNER")) runnerProc = null;
 
-    // If API crashed, we try restart; if port is already served, we won't respawn.
     setTimeout(() => startBackendProcesses(), 1200);
   });
 
@@ -150,15 +150,25 @@ async function startBackendProcesses() {
       runnerProc = spawnProcess(py, ["-u", pythonScriptPath("worker_main.py")], "RUNNER_DEV", userEnv);
     }
   } else {
-    // Packaged mode uses embedded exe(s) in resources/bin
+    // ✅ FIX: packaged mode uses foldered PyInstaller outputs
     if (!apiAlreadyUp && !apiProc) {
-      console.log(`[API] starting embedded salestroopz_api.exe on port ${API_PORT}...`);
-      apiProc = spawnProcess(binPath("salestroopz_api.exe"), [], "API", userEnv);
+      console.log(`[API] starting embedded salestroopz_api on port ${API_PORT}...`);
+      apiProc = spawnProcess(
+        binPath("salestroopz_api/salestroopz_api.exe"),
+        [],
+        "API",
+        userEnv
+      );
     }
 
     if (!runnerProc) {
-      console.log("[RUNNER] starting embedded salestroopz_runner.exe...");
-      runnerProc = spawnProcess(binPath("salestroopz_runner.exe"), [], "RUNNER", userEnv);
+      console.log("[RUNNER] starting embedded salestroopz_runner...");
+      runnerProc = spawnProcess(
+        binPath("salestroopz_runner/salestroopz_runner.exe"),
+        [],
+        "RUNNER",
+        userEnv
+      );
     }
   }
 }
