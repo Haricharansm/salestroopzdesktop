@@ -5,11 +5,11 @@
   "type": "module",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev:ui": "vite",
-    "dev:electron": "concurrently -k -n UI,ELECTRON -c cyan,magenta \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "build:ui": "vite build",
-    "dist:api": "cd agent && pyinstaller -y pyinstaller/salestroopz_api.spec",
-    "dist:runner": "cd agent && pyinstaller -y pyinstaller/salestroopz_runner.spec",
+    "dev:ui": "cd frontend && vite",
+    "dev:electron": "concurrently -k -n UI,ELECTRON -c cyan,magenta \"cd frontend && vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build:ui": "cd frontend && vite build",
+    "dist:api": "pyinstaller -y agent/pyinstaller/salestroopz_api.spec",
+    "dist:runner": "pyinstaller -y agent/pyinstaller/salestroopz_runner.spec",
     "dist:backend": "npm run dist:api && npm run dist:runner",
     "dist:win": "npm run build:ui && npm run dist:backend && electron-builder --win --x64"
   },
@@ -30,27 +30,28 @@
     "appId": "ai.saxon.salestroopz.desktop",
     "productName": "Salestroopz Desktop",
     "asar": true,
+    "forceCodeSigning": false,
     "directories": {
       "output": "release"
     },
     "files": [
-      "dist/**",
-      "electron/**"
+      "electron/**",
+      "frontend/dist/**"
     ],
     "extraResources": [
-    {
-    "from": "dist/salestroopz_api/salestroopz_api.exe",
-    "to": "bin/salestroopz_api.exe"
-    },
-    {
-    "from": "dist/salestroopz_runner/salestroopz_runner.exe",
-    "to": "bin/salestroopz_runner.exe"
-    }
-  ],
+      {
+        "from": "dist/salestroopz_api/",
+        "to": "bin/",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "dist/salestroopz_runner/",
+        "to": "bin/",
+        "filter": ["**/*"]
+      }
+    ],
     "win": {
-      "target": [
-        "nsis"
-      ]
+      "target": ["nsis"]
     },
     "nsis": {
       "oneClick": false,
