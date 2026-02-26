@@ -154,7 +154,7 @@ async function startBackendProcesses() {
     if (!apiAlreadyUp && !apiProc) {
       console.log(`[API] starting embedded salestroopz_api on port ${API_PORT}...`);
       apiProc = spawnProcess(
-        binPath("salestroopz_api/salestroopz_api.exe"),
+        binPath("salestroopz_api.exe"),
         [],
         "API",
         userEnv
@@ -164,7 +164,7 @@ async function startBackendProcesses() {
     if (!runnerProc) {
       console.log("[RUNNER] starting embedded salestroopz_runner...");
       runnerProc = spawnProcess(
-        binPath("salestroopz_runner/salestroopz_runner.exe"),
+        binPath("salestroopz_runner.exe"),
         [],
         "RUNNER",
         userEnv
