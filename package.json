@@ -13,19 +13,6 @@
     "dist:backend": "npm run dist:api && npm run dist:runner",
     "dist:win": "npm run build:ui && npm run dist:backend && electron-builder --win --x64"
   },
-  "dependencies": {
-    "axios": "^1.7.0",
-    "react": "^18.3.0",
-    "react-dom": "^18.3.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.0",
-    "concurrently": "^9.0.0",
-    "electron": "^40.6.0",
-    "electron-builder": "^26.8.1",
-    "vite": "^7.3.1",
-    "wait-on": "^7.2.0"
-  },
   "build": {
     "appId": "ai.saxon.salestroopz.desktop",
     "productName": "Salestroopz Desktop",
@@ -35,23 +22,23 @@
       "output": "release"
     },
     "files": [
-      "electron/**",
-      "frontend/dist/**"
+      "frontend/dist/**",
+      "electron/**"
     ],
     "extraResources": [
       {
-        "from": "dist/salestroopz_api/",
-        "to": "bin/",
-        "filter": ["**/*"]
+        "from": "dist/salestroopz_api",
+        "to": "bin/salestroopz_api"
       },
       {
-        "from": "dist/salestroopz_runner/",
-        "to": "bin/",
-        "filter": ["**/*"]
+        "from": "dist/salestroopz_runner",
+        "to": "bin/salestroopz_runner"
       }
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "nsis": {
       "oneClick": false,
