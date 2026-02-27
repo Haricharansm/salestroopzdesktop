@@ -1,14 +1,12 @@
 # agent/pyinstaller/salestroopz_api.spec
+# Build: salestroopz_api.exe
+# Purpose: runs FastAPI via uvicorn, no Python required on target machine.
+
 from pathlib import Path
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
-SPEC_DIR = Path(SPECPATH).resolve()              # ...\agent\pyinstaller
-AGENT_DIR = SPEC_DIR.parent                      # ...\agent
-ENTRY = AGENT_DIR / "api_entry.py"               # ...\agent\api_entry.py
-
-print(">>> SPEC_DIR:", SPEC_DIR)
-print(">>> AGENT_DIR:", AGENT_DIR)
-print(">>> ENTRY:", ENTRY, "exists:", ENTRY.exists())
+ROOT = Path(__file__).resolve().parents[1]  # agent/
+APP_DIR = ROOT / "app"
 
 hiddenimports = []
 hiddenimports += collect_submodules("uvicorn")
@@ -18,13 +16,16 @@ hiddenimports += collect_submodules("pydantic")
 hiddenimports += collect_submodules("sqlalchemy")
 hiddenimports += collect_submodules("msal")
 hiddenimports += collect_submodules("requests")
-hiddenimports += collect_submodules("app")
+
+# Include your app package + any non-py assets (templates, etc.)
+datas = []
+datas += collect_data_files("app", include_py_files=True)
 
 a = Analysis(
-    [str(ENTRY)],               # ✅ absolute path
-    pathex=[str(AGENT_DIR)],    # ✅ agent/ on sys.path
+    ["api_entry.py"],  # we will add this entry script next
+    pathex=[str(ROOT)],
     binaries=[],
-    datas=[],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
@@ -42,9 +43,11 @@ exe = EXE(
     exclude_binaries=True,
     name="salestroopz_api",
     debug=False,
+    bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True
+    console=True,   # keep console ON for v1 so we can diagnose startup issues in packaged builds
+    disable_windowed_traceback=False,
 )
 
 coll = COLLECT(
