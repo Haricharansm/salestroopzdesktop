@@ -13,7 +13,7 @@ const DEV_URL = "http://localhost:5173";
 
 // Packaged app:
 // main.cjs => <resources>/app.asar/electron/main.cjs
-// vite build output => <resources>/app.asar/frontend/dist/index.html
+// UI => <resources>/app.asar/frontend/dist/index.html  (because build.files includes frontend/dist/**)
 const PROD_INDEX = path.join(__dirname, "..", "frontend", "dist", "index.html");
 
 // -------------------------
@@ -38,7 +38,8 @@ function ensureDir(p) {
 }
 
 function getUserDataEnv() {
-  const ud = app.getPath("userData");
+  // Electron userData is writable. Program Files is not.
+  const ud = app.getPath("userData"); // e.g. C:\Users\X\AppData\Roaming\Salestroopz Desktop
   const root = path.join(ud, "salestroopz");
   ensureDir(root);
 
@@ -99,12 +100,12 @@ function getRepoRoot() {
 }
 
 function pythonScriptPath(scriptName) {
-  // ✅ FIX: dev scripts are at <repo>/agent/<scriptName>
+  // ✅ dev scripts live at <repo>/agent/<scriptName>
   return path.join(getRepoRoot(), "agent", scriptName);
 }
 
 function binPath(relPath) {
-  // ✅ Accept nested paths: "salestroopz_api/salestroopz_api.exe"
+  // In packaged mode, process.resourcesPath points to <InstallDir>\resources
   return path.join(process.resourcesPath, "bin", relPath);
 }
 
@@ -134,7 +135,6 @@ function spawnProcess(command, args, name, extraEnv = {}) {
 async function startBackendProcesses() {
   const apiAlreadyUp = await isHttpOk(API_HEALTH_URL);
   const isDev = !app.isPackaged;
-
   const userEnv = getUserDataEnv();
 
   if (isDev) {
@@ -150,11 +150,13 @@ async function startBackendProcesses() {
       runnerProc = spawnProcess(py, ["-u", pythonScriptPath("worker_main.py")], "RUNNER_DEV", userEnv);
     }
   } else {
-    // ✅ FIX: packaged mode uses foldered PyInstaller outputs
+    // ✅ packaged mode uses foldered PyInstaller outputs copied by extraResources:
+    // resources/bin/salestroopz_api/salestroopz_api.exe
+    // resources/bin/salestroopz_runner/salestroopz_runner.exe
     if (!apiAlreadyUp && !apiProc) {
       console.log(`[API] starting embedded salestroopz_api on port ${API_PORT}...`);
       apiProc = spawnProcess(
-        binPath("salestroopz_api.exe"),
+        binPath(path.join("salestroopz_api", "salestroopz_api.exe")),
         [],
         "API",
         userEnv
@@ -164,7 +166,7 @@ async function startBackendProcesses() {
     if (!runnerProc) {
       console.log("[RUNNER] starting embedded salestroopz_runner...");
       runnerProc = spawnProcess(
-        binPath("salestroopz_runner.exe"),
+        binPath(path.join("salestroopz_runner", "salestroopz_runner.exe")),
         [],
         "RUNNER",
         userEnv
